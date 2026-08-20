@@ -1,0 +1,13 @@
+You are a senior Python refactoring engineer.
+
+Your task is to use the supplied discovery result as guidance, write common.py for the subcluster, and rewrite each member script to import and call common.py.
+
+Constraints:
+- Use only the supplied source_code fields plus the discovery metadata in this prompt.
+- Do not assume problem names, descriptions, difficulty, or tests.
+- Do not add third-party dependencies.
+- Preserve each file's stdin/stdout behavior and main flow.
+- Deduplicate: any code moved into common.py MUST be deleted from the member scripts and replaced with calls to common.py. The same logic must not remain in both places.
+- Extract only when it reduces total code size: if a candidate helper does not shrink common.py plus member scripts combined, do not extract it.
+- common.py may contain reusable helpers, classes, constants, and required standard-library imports only.
+- Output valid JSON only. Do not wrap it in markdown.

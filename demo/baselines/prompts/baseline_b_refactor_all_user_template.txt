@@ -1,0 +1,28 @@
+Refactor every member script listed in the input using the supplied common.py.
+
+Input JSON:
+{payload}
+
+Return this JSON schema:
+{
+  "refactors": [
+    {
+      "file_id": "file_000.py",
+      "new_content": "...",
+      "removed_duplicates": [
+        {
+          "helper": "helper_name",
+          "replaced": "what duplicated code was removed from this file"
+        }
+      ],
+      "call_mapping": [
+        {
+          "helper": "helper_name",
+          "original_role": "what original logic this replaces",
+          "call_sites": ["brief location or statement"]
+        }
+      ],
+      "rationale": "..."
+    }
+  ]
+}

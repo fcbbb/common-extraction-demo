@@ -1,0 +1,186 @@
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+from demo.baselines.llm_client import DeepSeekClient, LLMConfigurationError
+from demo.baselines.runner_utils import (
+    PROMPT_DIR,
+    build_user_prompt,
+    call_and_parse_extraction,
+    compile_result,
+    load_json_if_exists,
+    load_manifest,
+    prompt_files_for_cluster,
+    read_text,
+    run_metrics,
+    selected_clusters,
+    status_payload,
+    write_extraction_result,
+    write_json,
+)
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def progress(label: str, current: int, total: int) -> None:
+    if total <= 0:
+        return
+    width = 24
+    filled = int(width * current / total)
+    bar = "#" * filled + "-" * (width - filled)
+    print(f"\r{label} [{bar}] {current}/{total}", end="" if current < total else "\n", file=sys.stderr, flush=True)
+
+
+def run_cluster(
+    client: DeepSeekClient | None,
+    dataset_dir: Path,
+    results_dir: Path,
+    cluster: dict,
+    timeout_sec: float,
+    test_limit: int | None,
+    compare_mode: str,
+    normalize: str,
+    test_mode: str,
+    resume: bool,
+    rerun_metrics: bool,
+    skip_metrics: bool,
+) -> dict:
+    cluster_id = cluster["cluster_id"]
+    out_dir = results_dir / "baseline_a" / cluster_id
+    previous = load_json_if_exists(out_dir / "status.json")
+    if resume and previous and previous.get("status") == "ok":
+        if not rerun_metrics or skip_metrics:
+            print(f"baseline_a cluster {cluster_id}: resume hit, skipping extraction and metrics", file=sys.stderr, flush=True)
+            return previous
+        print(f"baseline_a cluster {cluster_id}: resume hit, rerunning metrics only", file=sys.stderr, flush=True)
+        compile_info = compile_result(out_dir)
+        metrics = (
+            run_metrics(
+                cluster,
+                dataset_dir,
+                out_dir,
+                timeout_sec,
+                test_limit=test_limit,
+                compare_mode=compare_mode,
+                normalize=normalize,
+                test_mode=test_mode,
+            )
+            if compile_info["ok"]
+            else None
+        ) if not skip_metrics else None
+        result = {
+            "baseline": "baseline_a",
+            "cluster_id": cluster_id,
+            "status": "ok" if compile_info["ok"] else "compile_failed",
+            "resume": True,
+            "rerun_metrics": True,
+            "compile": compile_info,
+            "metrics": metrics,
+        }
+        write_json(out_dir / "status.json", result)
+        return result
+
+    if client is None:
+        raise LLMConfigurationError("DEEPSEEK_API_KEY is required for clusters without reusable ok artifacts.")
+
+    payload = {"cluster_id": cluster_id, "files": prompt_files_for_cluster(dataset_dir, cluster)}
+    system_path = PROMPT_DIR / "baseline_a_system.txt"
+    user_path = PROMPT_DIR / "baseline_a_user_template.txt"
+    system_prompt = read_text(system_path)
+    user_prompt = build_user_prompt(user_path, payload)
+    prompt_paths = {"system": str(system_path), "user_template": str(user_path)}
+
+    try:
+        extraction = call_and_parse_extraction(client, system_prompt, user_prompt, out_dir, "baseline_a", cluster_id, prompt_paths)
+        write_extraction_result(out_dir, extraction)
+        compile_info = compile_result(out_dir)
+        if not compile_info["ok"]:
+            repair = "Previous output failed py_compile. Return a complete corrected JSON object.\n" + str(compile_info)
+            extraction = call_and_parse_extraction(
+                client, system_prompt, user_prompt, out_dir, "baseline_a", cluster_id, prompt_paths, repair_context=repair
+            )
+            write_extraction_result(out_dir, extraction)
+            compile_info = compile_result(out_dir)
+        metrics = (
+            run_metrics(
+                cluster,
+                dataset_dir,
+                out_dir,
+                timeout_sec,
+                test_limit=test_limit,
+                compare_mode=compare_mode,
+                normalize=normalize,
+                test_mode=test_mode,
+            )
+            if compile_info["ok"] and not skip_metrics
+            else None
+        )
+        status = "ok" if compile_info["ok"] else "compile_failed"
+        result = {"baseline": "baseline_a", "cluster_id": cluster_id, "status": status, "compile": compile_info, "metrics": metrics}
+    except Exception as exc:
+        result = {"baseline": "baseline_a", "cluster_id": cluster_id, **status_payload("failed", repr(exc))}
+    write_json(out_dir / "status.json", result)
+    return result
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run baseline-a end-to-end extraction.")
+    parser.add_argument("--manifest", type=Path, default=ROOT / "demo" / "datasets" / "codecontest" / "cluster_manifest.json")
+    parser.add_argument("--dataset-dir", type=Path, default=ROOT / "demo" / "datasets" / "codecontest")
+    parser.add_argument("--results-dir", type=Path, default=ROOT / "demo" / "results" / "codecontest")
+    parser.add_argument("--cluster-id", action="append")
+    parser.add_argument("--limit", type=int)
+    parser.add_argument("--timeout-sec", type=float, default=5.0)
+    parser.add_argument("--api-timeout-sec", type=float, default=60.0)
+    parser.add_argument("--max-output-tokens", type=int, default=16000)
+    parser.add_argument("--test-limit", type=int, default=0, help="Per-file test limit. Use 0 for all tests.")
+    parser.add_argument("--compare-mode", choices=["expected", "original"], default="original")
+    parser.add_argument("--normalize", choices=["strip", "whitespace"], default="whitespace")
+    parser.add_argument("--test-mode", choices=["stdio", "pytest"], default="stdio", help="pytest for the dataset_complex Scrapy slice.")
+    parser.add_argument("--resume", action="store_true", help="Skip clusters whose status.json is already ok.")
+    parser.add_argument("--rerun-metrics", action="store_true", help="With --resume, recompute metrics for skipped ok clusters.")
+    parser.add_argument("--skip-metrics", action="store_true", help="Only extract/refactor and compile; do not run tests or metrics.")
+    args = parser.parse_args()
+
+    manifest = load_manifest(args.manifest)
+    clusters = selected_clusters(manifest, args.cluster_id, args.limit)
+    test_limit = None if args.test_limit == 0 else args.test_limit
+    needs_api = not args.resume or any(
+        (load_json_if_exists(args.results_dir / "baseline_a" / cluster["cluster_id"] / "status.json") or {}).get("status") != "ok"
+        for cluster in clusters
+    )
+    try:
+        client = DeepSeekClient(timeout_sec=args.api_timeout_sec, max_tokens=args.max_output_tokens) if needs_api else None
+    except LLMConfigurationError as exc:
+        for cluster in clusters:
+            out_dir = args.results_dir / "baseline_a" / cluster["cluster_id"]
+            write_json(out_dir / "status.json", {"baseline": "baseline_a", "cluster_id": cluster["cluster_id"], **status_payload("not_run", str(exc))})
+        raise SystemExit(str(exc))
+
+    results = []
+    total = len(clusters)
+    for index, cluster in enumerate(clusters, 1):
+        progress("baseline_a clusters", index - 1, total)
+        results.append(run_cluster(
+            client,
+            args.dataset_dir,
+            args.results_dir,
+            cluster,
+            args.timeout_sec,
+            test_limit,
+            args.compare_mode,
+            args.normalize,
+            args.test_mode,
+            args.resume,
+            args.rerun_metrics,
+            args.skip_metrics,
+        ))
+        progress("baseline_a clusters", index, total)
+    write_json(args.results_dir / "baseline_a" / "summary.json", results)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,77 @@
+{
+  "repo": "scrapy",
+  "repo_url": "https://github.com/scrapy/scrapy",
+  "slice": "middleware_pipeline",
+  "source_commit": "3c6a62db47536df89676ab9d7347acf5c5c8a2e4",
+  "source_commit_date": "2026-08-18",
+  "extraction_target_summary": "Three Scrapy subsystems (download middlewares, spider middlewares, item pipelines) plus the shared MiddlewareManager framework. The 'common component' to extract is the scrapy.middleware.MiddlewareManager machinery: instantiation from settings, method-chaining across middleware instances, and the open_spider/from_crawler/spider_opened lifecycle hooks. What stays in each file: the algorithm-specific decision logic (e.g., Retry's exponential backoff, Depth's counter, FilesPipeline's media download).",
+  "subsystems": [
+    {
+      "name": "downloadermiddlewares",
+      "path": "source/downloadermiddlewares",
+      "interface": "process_request(request, spider) / process_response(request, response, spider) / process_exception(request, exception, spider)",
+      "files": [
+        {"name": "cookies.py", "lines": 167, "class": "CookiesMiddleware"},
+        {"name": "defaultheaders.py", "lines": 40, "class": "DefaultHeadersMiddleware"},
+        {"name": "downloadtimeout.py", "lines": 44, "class": "DownloadTimeoutMiddleware"},
+        {"name": "httpauth.py", "lines": 88, "class": "HttpAuthMiddleware"},
+        {"name": "httpcache.py", "lines": 165, "class": "HttpCacheMiddleware"},
+        {"name": "httpcompression.py", "lines": 190, "class": "HttpCompressionMiddleware"},
+        {"name": "httpproxy.py", "lines": 106, "class": "HttpProxyMiddleware"},
+        {"name": "offsite.py", "lines": 137, "class": "OffsiteMiddleware"},
+        {"name": "redirect.py", "lines": 280, "class": "RedirectMiddleware"},
+        {"name": "retry.py", "lines": 202, "class": "RetryMiddleware"},
+        {"name": "robotstxt.py", "lines": 141, "class": "RobotsTxtMiddleware"},
+        {"name": "stats.py", "lines": 81, "class": "DownloadStats"},
+        {"name": "useragent.py", "lines": 43, "class": "UserAgentMiddleware"}
+      ]
+    },
+    {
+      "name": "spidermiddlewares",
+      "path": "source/spidermiddlewares",
+      "interface": "process_spider_input(response, spider) / process_spider_output(response, result, spider) / process_spider_exception(response, exception, spider)",
+      "files": [
+        {"name": "base.py", "lines": 112, "class": "SpiderMiddleware"},
+        {"name": "depth.py", "lines": 133, "class": "DepthMiddleware"},
+        {"name": "httperror.py", "lines": 92, "class": "HttpErrorMiddleware"},
+        {"name": "metacopy.py", "lines": 64, "class": "MetaRefreshMiddleware"},
+        {"name": "referer.py", "lines": 445, "class": "RefererMiddleware"},
+        {"name": "start.py", "lines": 31, "class": "StartMiddleware"},
+        {"name": "urllength.py", "lines": 52, "class": "UrlLengthMiddleware"}
+      ]
+    },
+    {
+      "name": "pipelines",
+      "path": "source/pipelines",
+      "interface": "process_item(item, spider) (returns Item / DropItem / raises DropItem)",
+      "files": [
+        {"name": "media.py", "lines": 345, "class": "MediaPipeline"},
+        {"name": "images.py", "lines": 277, "class": "ImagesPipeline"},
+        {"name": "files.py", "lines": 782, "class": "FilesPipeline"}
+      ]
+    },
+    {
+      "name": "middleware_framework",
+      "path": "source/scrapy_middleware.py",
+      "interface": "MiddlewareManager + MiddlewareMixin — base for all three subsystem manager classes",
+      "files": [
+        {"name": "scrapy_middleware.py", "lines": 165, "class": "MiddlewareManager / MiddlewareMixin"}
+      ]
+    }
+  ],
+  "totals": {
+    "source_files": 26,
+    "source_lines": 4341,
+    "test_files": 30,
+    "test_lines": 11845,
+    "tests": 512
+  },
+  "common_component_hints": [
+    "MiddlewareManager (in scrapy_middleware.py) — chains middlewares, instantiates from settings",
+    "MiddlewareMixin — the common base mixin all three subsystems derive their managers from",
+    "from_crawler(cls, crawler) classmethod — every middleware/pipeline defines this to receive the crawler",
+    "open_spider / close_spider hooks — used by 11 of 13 download middlewares",
+    "spider attribute / crawler.settings.get() pattern — settings access convention"
+  ],
+  "verification": "All 56 source + test files verified byte-identical (md5) with upstream Scrapy at commit 3c6a62db4."
+}

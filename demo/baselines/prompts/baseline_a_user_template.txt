@@ -1,0 +1,31 @@
+Refactor this cluster.
+
+Input JSON:
+{payload}
+
+Return this JSON schema:
+{
+  "library": {
+    "path": "common.py",
+    "content": "..."
+  },
+  "members": {
+    "file_000.py": {
+      "new_content": "...",
+      "removed_duplicates": [
+        {
+          "helper": "helper_name",
+          "replaced": "what duplicated code was removed from this file"
+        }
+      ],
+      "call_mapping": [
+        {
+          "helper": "helper_name",
+          "original_role": "what original logic this replaces",
+          "call_sites": ["brief location or statement"]
+        }
+      ]
+    }
+  },
+  "rationale": "..."
+}

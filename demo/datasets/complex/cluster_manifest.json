@@ -1,0 +1,482 @@
+{
+  "source_dir": "demo/dataset_complex/source",
+  "repo": "scrapy",
+  "repo_url": "https://github.com/scrapy/scrapy",
+  "slice_commit": "3c6a62db47536df89676ab9d7347acf5c5c8a2e4",
+  "slice_commit_date": "2026-08-18",
+  "prompt_input_fields": [
+    "file_id",
+    "source_code"
+  ],
+  "prompt_excluded_fields": [
+    "name",
+    "description",
+    "short_description",
+    "difficulty",
+    "public_tests",
+    "private_tests",
+    "generated_tests"
+  ],
+  "test_mode": "pytest",
+  "clusters": [
+    {
+      "cluster_id": "0",
+      "name": "scrapy_middleware_pipeline_slice",
+      "record_count": 24,
+      "source_lines": 4182,
+      "subsystems": [
+        {
+          "name": "downloadermiddlewares",
+          "path": "source/downloadermiddlewares",
+          "interface": "process_request(request, spider) / process_response(request, response, spider) / process_exception(request, exception, spider)",
+          "files": [
+            {
+              "name": "cookies.py",
+              "lines": 167,
+              "class": "CookiesMiddleware"
+            },
+            {
+              "name": "defaultheaders.py",
+              "lines": 40,
+              "class": "DefaultHeadersMiddleware"
+            },
+            {
+              "name": "downloadtimeout.py",
+              "lines": 44,
+              "class": "DownloadTimeoutMiddleware"
+            },
+            {
+              "name": "httpauth.py",
+              "lines": 88,
+              "class": "HttpAuthMiddleware"
+            },
+            {
+              "name": "httpcache.py",
+              "lines": 165,
+              "class": "HttpCacheMiddleware"
+            },
+            {
+              "name": "httpcompression.py",
+              "lines": 190,
+              "class": "HttpCompressionMiddleware"
+            },
+            {
+              "name": "httpproxy.py",
+              "lines": 106,
+              "class": "HttpProxyMiddleware"
+            },
+            {
+              "name": "offsite.py",
+              "lines": 137,
+              "class": "OffsiteMiddleware"
+            },
+            {
+              "name": "redirect.py",
+              "lines": 280,
+              "class": "RedirectMiddleware"
+            },
+            {
+              "name": "retry.py",
+              "lines": 202,
+              "class": "RetryMiddleware"
+            },
+            {
+              "name": "robotstxt.py",
+              "lines": 141,
+              "class": "RobotsTxtMiddleware"
+            },
+            {
+              "name": "stats.py",
+              "lines": 81,
+              "class": "DownloadStats"
+            },
+            {
+              "name": "useragent.py",
+              "lines": 43,
+              "class": "UserAgentMiddleware"
+            }
+          ]
+        },
+        {
+          "name": "spidermiddlewares",
+          "path": "source/spidermiddlewares",
+          "interface": "process_spider_input(response, spider) / process_spider_output(response, result, spider) / process_spider_exception(response, exception, spider)",
+          "files": [
+            {
+              "name": "base.py",
+              "lines": 112,
+              "class": "SpiderMiddleware"
+            },
+            {
+              "name": "depth.py",
+              "lines": 133,
+              "class": "DepthMiddleware"
+            },
+            {
+              "name": "httperror.py",
+              "lines": 92,
+              "class": "HttpErrorMiddleware"
+            },
+            {
+              "name": "metacopy.py",
+              "lines": 64,
+              "class": "MetaRefreshMiddleware"
+            },
+            {
+              "name": "referer.py",
+              "lines": 445,
+              "class": "RefererMiddleware"
+            },
+            {
+              "name": "start.py",
+              "lines": 31,
+              "class": "StartMiddleware"
+            },
+            {
+              "name": "urllength.py",
+              "lines": 52,
+              "class": "UrlLengthMiddleware"
+            }
+          ]
+        },
+        {
+          "name": "pipelines",
+          "path": "source/pipelines",
+          "interface": "process_item(item, spider) (returns Item / DropItem / raises DropItem)",
+          "files": [
+            {
+              "name": "media.py",
+              "lines": 345,
+              "class": "MediaPipeline"
+            },
+            {
+              "name": "images.py",
+              "lines": 277,
+              "class": "ImagesPipeline"
+            },
+            {
+              "name": "files.py",
+              "lines": 782,
+              "class": "FilesPipeline"
+            }
+          ]
+        },
+        {
+          "name": "middleware_framework",
+          "path": "source/scrapy_middleware.py",
+          "interface": "MiddlewareManager + MiddlewareMixin — base for all three subsystem manager classes",
+          "files": [
+            {
+              "name": "scrapy_middleware.py",
+              "lines": 165,
+              "class": "MiddlewareManager / MiddlewareMixin"
+            }
+          ]
+        }
+      ],
+      "test_dir": "demo/dataset_complex/tests",
+      "shared_test_files": [
+        "test_downloadermiddleware.py",
+        "test_spidermiddleware.py",
+        "test_spidermiddleware_output_chain.py",
+        "test_pipelines.py"
+      ],
+      "files": [
+        {
+          "file_id": "file_000.py",
+          "name": "cookies.py",
+          "rel_path": "downloadermiddlewares/cookies.py",
+          "subsystem": "downloadermiddlewares",
+          "lines": 167,
+          "tests": {
+            "pytest": [
+              "test_downloadermiddleware_cookies.py"
+            ]
+          }
+        },
+        {
+          "file_id": "file_001.py",
+          "name": "defaultheaders.py",
+          "rel_path": "downloadermiddlewares/defaultheaders.py",
+          "subsystem": "downloadermiddlewares",
+          "lines": 40,
+          "tests": {
+            "pytest": [
+              "test_downloadermiddleware_defaultheaders.py"
+            ]
+          }
+        },
+        {
+          "file_id": "file_002.py",
+          "name": "downloadtimeout.py",
+          "rel_path": "downloadermiddlewares/downloadtimeout.py",
+          "subsystem": "downloadermiddlewares",
+          "lines": 44,
+          "tests": {
+            "pytest": [
+              "test_downloadermiddleware_downloadtimeout.py"
+            ]
+          }
+        },
+        {
+          "file_id": "file_003.py",
+          "name": "httpauth.py",
+          "rel_path": "downloadermiddlewares/httpauth.py",
+          "subsystem": "downloadermiddlewares",
+          "lines": 88,
+          "tests": {
+            "pytest": [
+              "test_downloadermiddleware_httpauth.py"
+            ]
+          }
+        },
+        {
+          "file_id": "file_004.py",
+          "name": "httpcache.py",
+          "rel_path": "downloadermiddlewares/httpcache.py",
+          "subsystem": "downloadermiddlewares",
+          "lines": 165,
+          "tests": {
+            "pytest": [
+              "test_downloadermiddleware_httpcache.py"
+            ]
+          }
+        },
+        {
+          "file_id": "file_005.py",
+          "name": "httpcompression.py",
+          "rel_path": "downloadermiddlewares/httpcompression.py",
+          "subsystem": "downloadermiddlewares",
+          "lines": 190,
+          "tests": {
+            "pytest": [
+              "test_downloadermiddleware_httpcompression.py"
+            ]
+          }
+        },
+        {
+          "file_id": "file_006.py",
+          "name": "httpproxy.py",
+          "rel_path": "downloadermiddlewares/httpproxy.py",
+          "subsystem": "downloadermiddlewares",
+          "lines": 106,
+          "tests": {
+            "pytest": [
+              "test_downloadermiddleware_httpproxy.py"
+            ]
+          }
+        },
+        {
+          "file_id": "file_007.py",
+          "name": "offsite.py",
+          "rel_path": "downloadermiddlewares/offsite.py",
+          "subsystem": "downloadermiddlewares",
+          "lines": 137,
+          "tests": {
+            "pytest": [
+              "test_downloadermiddleware_offsite.py"
+            ]
+          }
+        },
+        {
+          "file_id": "file_008.py",
+          "name": "redirect.py",
+          "rel_path": "downloadermiddlewares/redirect.py",
+          "subsystem": "downloadermiddlewares",
+          "lines": 280,
+          "tests": {
+            "pytest": [
+              "test_downloadermiddleware_redirect.py",
+              "test_downloadermiddleware_redirect_metarefresh.py"
+            ]
+          }
+        },
+        {
+          "file_id": "file_009.py",
+          "name": "retry.py",
+          "rel_path": "downloadermiddlewares/retry.py",
+          "subsystem": "downloadermiddlewares",
+          "lines": 202,
+          "tests": {
+            "pytest": [
+              "test_downloadermiddleware_retry.py"
+            ]
+          }
+        },
+        {
+          "file_id": "file_010.py",
+          "name": "robotstxt.py",
+          "rel_path": "downloadermiddlewares/robotstxt.py",
+          "subsystem": "downloadermiddlewares",
+          "lines": 141,
+          "tests": {
+            "pytest": [
+              "test_downloadermiddleware_robotstxt.py"
+            ]
+          }
+        },
+        {
+          "file_id": "file_011.py",
+          "name": "stats.py",
+          "rel_path": "downloadermiddlewares/stats.py",
+          "subsystem": "downloadermiddlewares",
+          "lines": 81,
+          "tests": {
+            "pytest": [
+              "test_downloadermiddleware_stats.py"
+            ]
+          }
+        },
+        {
+          "file_id": "file_012.py",
+          "name": "useragent.py",
+          "rel_path": "downloadermiddlewares/useragent.py",
+          "subsystem": "downloadermiddlewares",
+          "lines": 43,
+          "tests": {
+            "pytest": [
+              "test_downloadermiddleware_useragent.py"
+            ]
+          }
+        },
+        {
+          "file_id": "file_013.py",
+          "name": "base.py",
+          "rel_path": "spidermiddlewares/base.py",
+          "subsystem": "spidermiddlewares",
+          "lines": 112,
+          "tests": {
+            "pytest": [
+              "test_spidermiddleware_base.py"
+            ]
+          }
+        },
+        {
+          "file_id": "file_014.py",
+          "name": "depth.py",
+          "rel_path": "spidermiddlewares/depth.py",
+          "subsystem": "spidermiddlewares",
+          "lines": 133,
+          "tests": {
+            "pytest": [
+              "test_spidermiddleware_depth.py"
+            ]
+          }
+        },
+        {
+          "file_id": "file_015.py",
+          "name": "httperror.py",
+          "rel_path": "spidermiddlewares/httperror.py",
+          "subsystem": "spidermiddlewares",
+          "lines": 92,
+          "tests": {
+            "pytest": [
+              "test_spidermiddleware_httperror.py"
+            ]
+          }
+        },
+        {
+          "file_id": "file_016.py",
+          "name": "metacopy.py",
+          "rel_path": "spidermiddlewares/metacopy.py",
+          "subsystem": "spidermiddlewares",
+          "lines": 64,
+          "tests": {
+            "pytest": [
+              "test_spidermiddleware_metacopy.py"
+            ]
+          }
+        },
+        {
+          "file_id": "file_017.py",
+          "name": "referer.py",
+          "rel_path": "spidermiddlewares/referer.py",
+          "subsystem": "spidermiddlewares",
+          "lines": 445,
+          "tests": {
+            "pytest": [
+              "test_spidermiddleware_referer.py"
+            ]
+          }
+        },
+        {
+          "file_id": "file_018.py",
+          "name": "start.py",
+          "rel_path": "spidermiddlewares/start.py",
+          "subsystem": "spidermiddlewares",
+          "lines": 31,
+          "tests": {
+            "pytest": [
+              "test_spidermiddleware_start.py",
+              "test_spidermiddleware_process_start.py"
+            ]
+          }
+        },
+        {
+          "file_id": "file_019.py",
+          "name": "urllength.py",
+          "rel_path": "spidermiddlewares/urllength.py",
+          "subsystem": "spidermiddlewares",
+          "lines": 52,
+          "tests": {
+            "pytest": [
+              "test_spidermiddleware_urllength.py"
+            ]
+          }
+        },
+        {
+          "file_id": "file_020.py",
+          "name": "media.py",
+          "rel_path": "pipelines/media.py",
+          "subsystem": "pipelines",
+          "lines": 345,
+          "tests": {
+            "pytest": [
+              "test_pipeline_media.py"
+            ]
+          }
+        },
+        {
+          "file_id": "file_021.py",
+          "name": "images.py",
+          "rel_path": "pipelines/images.py",
+          "subsystem": "pipelines",
+          "lines": 277,
+          "tests": {
+            "pytest": [
+              "test_pipeline_images.py"
+            ]
+          }
+        },
+        {
+          "file_id": "file_022.py",
+          "name": "files.py",
+          "rel_path": "pipelines/files.py",
+          "subsystem": "pipelines",
+          "lines": 782,
+          "tests": {
+            "pytest": [
+              "test_pipeline_files.py"
+            ]
+          }
+        },
+        {
+          "file_id": "file_023.py",
+          "name": "scrapy_middleware.py",
+          "rel_path": "scrapy_middleware.py",
+          "subsystem": "middleware_framework",
+          "lines": 165,
+          "tests": {
+            "pytest": [
+              "test_middleware.py"
+            ]
+          }
+        }
+      ],
+      "test_counts": {
+        "member_mapped_test_files": 26,
+        "pytest_test_functions": 398
+      }
+    }
+  ]
+}

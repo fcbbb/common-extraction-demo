@@ -1,0 +1,12 @@
+# 大文件：模型（17GB）、抽取结果（可重新生成）、任务日志
+model/
+demo/results/
+slurm_log/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 环境
+.env

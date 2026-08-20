@@ -1,0 +1,25 @@
+Discover reusable-code subclusters in this cluster.
+
+Input JSON:
+{payload}
+
+Return this JSON schema:
+{
+  "clusters": [
+    {
+      "cluster_id": "sub_0",
+      "members": ["file_000.py", "file_003.py"],
+      "shared_concept": "...",
+      "shared_interface": [
+        {
+          "name": "helper_name",
+          "signature_guess": "helper_name(...)",
+          "role": "..."
+        }
+      ],
+      "key_variations": ["..."]
+    }
+  ],
+  "noise": ["file_007.py"],
+  "rationale": "..."
+}

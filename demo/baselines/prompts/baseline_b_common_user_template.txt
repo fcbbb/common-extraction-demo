@@ -1,0 +1,13 @@
+Write common.py for this discovered subcluster.
+
+Input JSON:
+{payload}
+
+Return this JSON schema:
+{
+  "library": {
+    "path": "common.py",
+    "content": "..."
+  },
+  "rationale": "..."
+}
