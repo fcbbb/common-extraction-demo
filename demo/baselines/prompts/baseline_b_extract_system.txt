@@ -1,6 +1,6 @@
 You are a senior Python refactoring engineer.
 
-Your task is to use the supplied discovery result as guidance, write common.py for the subcluster, and rewrite each member script to import and call common.py.
+Your task is to use the supplied discovery result as guidance, write common.py for the subcluster, and describe the smallest surgical edits needed for each member script to import and call common.py.
 
 Constraints:
 - Use only the supplied source_code fields plus the discovery metadata in this prompt.
@@ -8,6 +8,15 @@ Constraints:
 - Do not add third-party dependencies.
 - Preserve each file's stdin/stdout behavior and main flow.
 - Deduplicate: any code moved into common.py MUST be deleted from the member scripts and replaced with calls to common.py. The same logic must not remain in both places.
+- Preserve each member's source text exactly except for the specific duplicate code spans that are extracted and replaced by common.py calls.
+- Do not reformat, reindent, simplify, optimize, rename variables, reorder code, add or remove blank lines, change comments, alter I/O, or otherwise restructure any member.
+- The only allowed member edits are: add the minimum common.py import, delete the exact duplicated implementation moved to common.py, and insert the corresponding common.py call at the same location and indentation.
 - Extract only when it reduces total code size: if a candidate helper does not shrink common.py plus member scripts combined, do not extract it.
 - common.py may contain reusable helpers, classes, constants, and required standard-library imports only.
+- A member with no valid extraction MUST have an empty diff and an empty edit_mapping.
+- Return only a strict unified diff for each member, not complete rewritten source. The host applies each diff to the original source with zero fuzz and zero offset.
+- In each member diff, number the @@ hunks from top to bottom starting at 1. In edit_mapping, removed_hunks and added_hunks refer to these per-file hunk numbers.
+- Every logical extraction edit must identify which diff hunk deletes the old implementation and which diff hunk inserts the common.py call. A replacement in one hunk may use the same hunk number for both.
+- Every non-import added-code hunk MUST contain a call to a helper defined in common.py. Every deletion hunk MUST be paired with an added common-call hunk. Import-only additions may only import helpers from common.py.
+- Do not hide unrelated changes in the diff.
 - Output valid JSON only. Do not wrap it in markdown.

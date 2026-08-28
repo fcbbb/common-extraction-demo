@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ast
 import json
 import py_compile
+import re
 import shutil
 import subprocess
 import sys
@@ -114,8 +116,8 @@ def call_and_parse_extraction(
             final_user_prompt = (
                 prompt
                 + "\n\nYour previous response could not be parsed or did not match the required schema. "
-                + "Return one complete valid JSON object only, with library.content, members.*.new_content, "
-                + "and members.*.removed_duplicates."
+                + "Return one complete valid JSON object only, with library.content, members.*.diff, "
+                + "and members.*.edit_mapping. Do not return members.*.new_content."
                 + f"\nParser error: {errors[-1]}"
             )
         status(f"{baseline} cluster {cluster_id}: calling DeepSeek API attempt {attempt + 1}/2")
@@ -135,6 +137,154 @@ def call_and_parse_extraction(
     raise ValueError("Extraction JSON parse/schema failed after one retry: " + " | ".join(errors))
 
 
+_DIFF_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+def _parse_unified_diff(diff: str) -> list[dict[str, Any]]:
+    if not diff.strip():
+        return []
+    hunks: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for line in diff.splitlines():
+        match = _DIFF_HUNK_RE.match(line)
+        if match:
+            if current is not None:
+                hunks.append(current)
+            current = {
+                "old_start": int(match.group(1)),
+                "old_count": int(match.group(2) or "1"),
+                "new_start": int(match.group(3)),
+                "new_count": int(match.group(4) or "1"),
+                "lines": [],
+            }
+            continue
+        if current is None:
+            if line.startswith("--- ") or line.startswith("+++ ") or not line:
+                continue
+            raise ValueError(f"Unexpected unified diff line before first hunk: {line!r}")
+        if line == r"\ No newline at end of file":
+            continue
+        if not line or line[0] not in " +-":
+            raise ValueError(f"Invalid unified diff line: {line!r}")
+        current["lines"].append((line[0], line[1:]))
+    if current is not None:
+        hunks.append(current)
+    if not hunks:
+        raise ValueError("Diff has no unified diff hunks")
+    for index, hunk in enumerate(hunks, 1):
+        old_count = sum(prefix in " -" for prefix, _ in hunk["lines"])
+        new_count = sum(prefix in " +" for prefix, _ in hunk["lines"])
+        if old_count != hunk["old_count"] or new_count != hunk["new_count"]:
+            raise ValueError(
+                f"Hunk {index} line count mismatch: expected -{hunk['old_count']} +{hunk['new_count']}, "
+                f"got -{old_count} +{new_count}"
+            )
+        hunk["id"] = index
+        hunk["has_deleted"] = any(prefix == "-" for prefix, _ in hunk["lines"])
+        hunk["has_added"] = any(prefix == "+" for prefix, _ in hunk["lines"])
+        hunk["added_lines"] = [text for prefix, text in hunk["lines"] if prefix == "+"]
+    return hunks
+
+
+def _apply_unified_diff(source: str, hunks: list[dict[str, Any]]) -> str:
+    source_lines = source.splitlines()
+    output: list[str] = []
+    cursor = 0
+    for hunk in hunks:
+        start = 0 if hunk["old_start"] == 0 else hunk["old_start"] - 1
+        if start < cursor or start > len(source_lines):
+            raise ValueError(f"Hunk {hunk['id']} has an invalid or overlapping source range")
+        output.extend(source_lines[cursor:start])
+        position = start
+        for prefix, text in hunk["lines"]:
+            if prefix in " -":
+                if position >= len(source_lines) or source_lines[position] != text:
+                    raise ValueError(f"Hunk {hunk['id']} does not match the original source exactly")
+                if prefix == " ":
+                    output.append(source_lines[position])
+                position += 1
+            else:
+                output.append(text)
+        cursor = position
+    output.extend(source_lines[cursor:])
+    ending = "\n" if source.endswith("\n") else ""
+    return "\n".join(output) + ending
+
+
+def _common_api_names(content: str) -> set[str]:
+    try:
+        tree = ast.parse(content)
+    except SyntaxError as exc:
+        raise ValueError(f"common.py is not valid Python: {exc}") from exc
+    return {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+
+
+def materialize_surgical_extraction(
+    payload: dict[str, Any],
+    original_files: dict[str, str],
+) -> dict[str, Any]:
+    members = payload["members"]
+    if set(members) != set(original_files):
+        raise ValueError(
+            f"Member file_ids mismatch: expected {sorted(original_files)}, got {sorted(members)}"
+        )
+    api_names = _common_api_names(payload["library"]["content"])
+    materialized_members: dict[str, Any] = {}
+    for file_id, source in original_files.items():
+        member = members[file_id]
+        hunks = _parse_unified_diff(member["diff"])
+        mappings = member["edit_mapping"]
+        by_id = {hunk["id"]: hunk for hunk in hunks}
+        mapped_removed: set[int] = set()
+        mapped_added: set[int] = set()
+        for mapping in mappings:
+            helper = mapping["helper"]
+            if helper not in api_names:
+                raise ValueError(f"{file_id} references helper not defined in common.py: {helper}")
+            removed = set(mapping["removed_hunks"])
+            added = set(mapping["added_hunks"])
+            if not removed or not added:
+                raise ValueError(f"{file_id} edit {mapping['edit_id']} must map deleted and added hunks")
+            if not removed <= set(by_id) or not added <= set(by_id):
+                raise ValueError(f"{file_id} edit {mapping['edit_id']} references an unknown hunk")
+            helper_call = re.compile(rf"(?:\bcommon\s*\.\s*)?\b{re.escape(helper)}\s*\(")
+            if not any(
+                any(helper_call.search(line) for line in by_id[hunk_id]["added_lines"])
+                for hunk_id in added
+            ):
+                raise ValueError(f"{file_id} edit {mapping['edit_id']} has no call to common.{helper}")
+            if not all(by_id[hunk_id]["has_deleted"] for hunk_id in removed):
+                raise ValueError(f"{file_id} edit {mapping['edit_id']} has no deleted implementation hunk")
+            mapped_removed.update(removed)
+            mapped_added.update(added)
+        for hunk in hunks:
+            added_lines = hunk["added_lines"]
+            import_only = bool(added_lines) and all(
+                line.strip().startswith("from common import ") or line.strip() == "import common"
+                for line in added_lines
+            )
+            if hunk["has_deleted"] and hunk["id"] not in mapped_removed:
+                raise ValueError(f"{file_id} deletion hunk {hunk['id']} is not mapped to a common call")
+            if hunk["has_added"] and not import_only and hunk["id"] not in mapped_added:
+                raise ValueError(f"{file_id} added-code hunk {hunk['id']} is not mapped to a common call")
+            if import_only and any(
+                not (line.strip().startswith("from common import ") or line.strip() == "import common")
+                for line in added_lines
+            ):
+                raise ValueError(f"{file_id} has an invalid import-only hunk {hunk['id']}")
+        generated = _apply_unified_diff(source, hunks)
+        materialized_member = dict(member)
+        materialized_member["new_content"] = generated
+        materialized_members[file_id] = materialized_member
+    materialized = dict(payload)
+    materialized["members"] = materialized_members
+    return materialized
+
+
 def write_extraction_result(out_dir: Path, payload: dict[str, Any]) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "common.py").write_text(payload["library"]["content"], encoding="utf-8")
@@ -149,6 +299,7 @@ def write_extraction_result(out_dir: Path, payload: dict[str, Any]) -> None:
         {
             "members": {
                 file_id: {
+                    "edit_mapping": member.get("edit_mapping", []),
                     "call_mapping": member.get("call_mapping", []),
                     "removed_duplicates": member.get("removed_duplicates", []),
                 }

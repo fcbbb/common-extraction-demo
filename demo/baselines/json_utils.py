@@ -34,10 +34,22 @@ def require_extraction_schema(payload: dict[str, Any]) -> None:
     for file_id, member in members.items():
         if not isinstance(file_id, str) or not isinstance(member, dict):
             raise ValueError("Each members entry must be an object")
-        if not isinstance(member.get("new_content"), str):
-            raise ValueError(f"{file_id} missing new_content")
-        if not isinstance(member.get("removed_duplicates"), list):
-            raise ValueError(f"{file_id} missing removed_duplicates list")
+        if not isinstance(member.get("diff"), str):
+            raise ValueError(f"{file_id} missing diff")
+        if not isinstance(member.get("edit_mapping"), list):
+            raise ValueError(f"{file_id} missing edit_mapping list")
+        for edit in member["edit_mapping"]:
+            if not isinstance(edit, dict):
+                raise ValueError(f"{file_id} edit_mapping entries must be objects")
+            if not isinstance(edit.get("edit_id"), str):
+                raise ValueError(f"{file_id} edit_mapping entry missing edit_id")
+            if not isinstance(edit.get("helper"), str):
+                raise ValueError(f"{file_id} edit_mapping entry missing helper")
+            for key in ("removed_hunks", "added_hunks"):
+                if not isinstance(edit.get(key), list) or not all(isinstance(item, int) for item in edit[key]):
+                    raise ValueError(f"{file_id} edit_mapping entry has invalid {key}")
+            if not isinstance(edit.get("relationship"), str):
+                raise ValueError(f"{file_id} edit_mapping entry missing relationship")
         if "call_mapping" in member and not isinstance(member["call_mapping"], list):
             raise ValueError(f"{file_id} call_mapping must be a list")
 
@@ -60,10 +72,22 @@ def require_member_refactor_schema(payload: dict[str, Any], expected_file_id: st
         raise ValueError("Member refactor output must include file_id")
     if expected_file_id is not None and file_id != expected_file_id:
         raise ValueError(f"Member refactor file_id mismatch: expected {expected_file_id}, got {file_id}")
-    if not isinstance(payload.get("new_content"), str):
-        raise ValueError("Member refactor output must include new_content")
-    if not isinstance(payload.get("removed_duplicates"), list):
-        raise ValueError("Member refactor output must include removed_duplicates list")
+    if not isinstance(payload.get("diff"), str):
+        raise ValueError("Member refactor output must include diff")
+    if not isinstance(payload.get("edit_mapping"), list):
+        raise ValueError("Member refactor output must include edit_mapping list")
+    for edit in payload["edit_mapping"]:
+        if not isinstance(edit, dict):
+            raise ValueError("Member refactor edit_mapping entries must be objects")
+        if not isinstance(edit.get("edit_id"), str):
+            raise ValueError("Member refactor edit_mapping entry missing edit_id")
+        if not isinstance(edit.get("helper"), str):
+            raise ValueError("Member refactor edit_mapping entry missing helper")
+        for key in ("removed_hunks", "added_hunks"):
+            if not isinstance(edit.get(key), list) or not all(isinstance(item, int) for item in edit[key]):
+                raise ValueError(f"Member refactor edit_mapping entry has invalid {key}")
+        if not isinstance(edit.get("relationship"), str):
+            raise ValueError("Member refactor edit_mapping entry missing relationship")
     if "call_mapping" in payload and not isinstance(payload["call_mapping"], list):
         raise ValueError("Member refactor call_mapping must be a list")
     rationale = payload.get("rationale")

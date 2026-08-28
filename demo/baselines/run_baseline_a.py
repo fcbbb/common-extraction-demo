@@ -12,6 +12,7 @@ from demo.baselines.runner_utils import (
     compile_result,
     load_json_if_exists,
     load_manifest,
+    materialize_surgical_extraction,
     prompt_files_for_cluster,
     read_text,
     run_metrics,
@@ -92,9 +93,18 @@ def run_cluster(
     system_prompt = read_text(system_path)
     user_prompt = build_user_prompt(user_path, payload)
     prompt_paths = {"system": str(system_path), "user_template": str(user_path)}
+    original_files = {item["file_id"]: item["source_code"] for item in payload["files"]}
 
     try:
         extraction = call_and_parse_extraction(client, system_prompt, user_prompt, out_dir, "baseline_a", cluster_id, prompt_paths)
+        try:
+            extraction = materialize_surgical_extraction(extraction, original_files)
+        except ValueError as exc:
+            repair = "Previous response contained an invalid surgical diff. Return a complete corrected JSON object.\n" + str(exc)
+            extraction = call_and_parse_extraction(
+                client, system_prompt, user_prompt, out_dir, "baseline_a", cluster_id, prompt_paths, repair_context=repair
+            )
+            extraction = materialize_surgical_extraction(extraction, original_files)
         write_extraction_result(out_dir, extraction)
         compile_info = compile_result(out_dir)
         if not compile_info["ok"]:
@@ -102,6 +112,7 @@ def run_cluster(
             extraction = call_and_parse_extraction(
                 client, system_prompt, user_prompt, out_dir, "baseline_a", cluster_id, prompt_paths, repair_context=repair
             )
+            extraction = materialize_surgical_extraction(extraction, original_files)
             write_extraction_result(out_dir, extraction)
             compile_info = compile_result(out_dir)
         metrics = (
@@ -134,8 +145,8 @@ def main() -> None:
     parser.add_argument("--cluster-id", action="append")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--timeout-sec", type=float, default=5.0)
-    parser.add_argument("--api-timeout-sec", type=float, default=60.0)
-    parser.add_argument("--max-output-tokens", type=int, default=16000)
+    parser.add_argument("--api-timeout-sec", type=float, default=None, help="Optional API request timeout")
+    parser.add_argument("--max-output-tokens", type=int, default=None, help="Optional client-side output token limit")
     parser.add_argument("--test-limit", type=int, default=0, help="Per-file test limit. Use 0 for all tests.")
     parser.add_argument("--compare-mode", choices=["expected", "original"], default="original")
     parser.add_argument("--normalize", choices=["strip", "whitespace"], default="whitespace")

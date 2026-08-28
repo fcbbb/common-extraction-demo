@@ -8,11 +8,14 @@ Return this JSON schema:
   "refactors": [
     {
       "file_id": "file_000.py",
-      "new_content": "...",
-      "removed_duplicates": [
+      "diff": "",
+      "edit_mapping": [
         {
+          "edit_id": "edit_1",
           "helper": "helper_name",
-          "replaced": "what duplicated code was removed from this file"
+          "removed_hunks": [1],
+          "added_hunks": [1],
+          "relationship": "what deleted implementation is replaced by the common.py call"
         }
       ],
       "call_mapping": [

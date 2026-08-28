@@ -31,7 +31,7 @@ class DeepSeekClient:
         base_url: str | None = None,
         model: str | None = None,
         temperature: float = 0.0,
-        timeout_sec: float = 60.0,
+        timeout_sec: float | None = None,
         max_tokens: int | None = None,
     ) -> None:
         self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
@@ -40,7 +40,7 @@ class DeepSeekClient:
         self.temperature = temperature
         self.timeout_sec = timeout_sec
         raw_max_tokens = max_tokens if max_tokens is not None else os.getenv("DEEPSEEK_MAX_TOKENS")
-        self.max_tokens = int(raw_max_tokens) if raw_max_tokens not in (None, "") else 128000
+        self.max_tokens = int(raw_max_tokens) if raw_max_tokens not in (None, "") else None
         if not self.api_key:
             raise LLMConfigurationError(
                 "DEEPSEEK_API_KEY is not set. Set DEEPSEEK_API_KEY, optionally DEEPSEEK_BASE_URL and DEEPSEEK_MODEL."
@@ -51,13 +51,14 @@ class DeepSeekClient:
         body = {
             "model": self.model,
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
             "response_format": {"type": "json_object"},
         }
+        if self.max_tokens is not None:
+            body["max_tokens"] = self.max_tokens
         data = json.dumps(body).encode("utf-8")
         request = urllib.request.Request(
             url,

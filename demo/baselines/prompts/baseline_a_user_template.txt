@@ -3,7 +3,7 @@ Refactor this cluster.
 Input JSON:
 {payload}
 
-Return this JSON schema:
+Return this JSON schema. Do not return complete rewritten member files. Each member must contain only a strict unified diff and the mapping between deleted implementation hunks and inserted common.py call hunks. Number each file's `@@ ... @@` hunks from top to bottom starting at 1; these are the hunk IDs used below, not source line numbers:
 {
   "library": {
     "path": "common.py",
@@ -11,20 +11,17 @@ Return this JSON schema:
   },
   "members": {
     "file_000.py": {
-      "new_content": "...",
-      "removed_duplicates": [
+      "diff": "",
+      "edit_mapping": [
         {
+          "edit_id": "edit_1",
           "helper": "helper_name",
-          "replaced": "what duplicated code was removed from this file"
+          "removed_hunks": [1],
+          "added_hunks": [2],
+          "relationship": "what deleted implementation is replaced by the common.py call"
         }
       ],
-      "call_mapping": [
-        {
-          "helper": "helper_name",
-          "original_role": "what original logic this replaces",
-          "call_sites": ["brief location or statement"]
-        }
-      ]
+      "call_mapping": []
     }
   },
   "rationale": "..."

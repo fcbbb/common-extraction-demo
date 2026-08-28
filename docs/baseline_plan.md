@@ -18,9 +18,12 @@
    - 对每个作者给定 cluster，单次把该 cluster 的所有 `solution` 源码喂给 LLM。
    - 让 LLM 一次性完成“发现共性、生成 `common.py`、改写成员文件”。
 
-2. **Baseline-b：先发现再抽取**
+2. **Baseline-b：先发现，再生成公共库，最后应用成员改写**
    - Step 1：只看同一个 cluster 内所有 `solution`，让 LLM 自己发现哪些文件共享组件。
-   - Step 2：对 Step 1 发现出的每个有效子簇，再让 LLM 抽取 `common.py` 并改写成员文件。
+   - Step 2：对 Step 1 发现出的每个有效子簇，让 LLM 只生成 `common.py`。
+   - Step 3：将 `common.py` 和成员源码交给独立的改写步骤，只生成成员文件的严格 diff；宿主程序应用 diff 后写出最终文件。
+
+这里的“抽取”在语义上包含两件事：判断哪些逻辑值得共享，以及把这部分逻辑实现为 `common.py` 的 helper。为了让每次 LLM 调用只承担一个明确任务，Baseline-b 在工程实现上把“生成公共库”和“修改成员源码”分开。成员源码的具体删除位置、调用位置和 hunk 对应关系由 Step 3 输出并由宿主程序校验。
 
 两者都使用同一个 DeepSeek V4 Flash API 配置，温度固定为 0，不做多样本采样，不做 rerank。
 
@@ -238,12 +241,12 @@ file_api_coverage = 至少调用一个 common API 的改写文件数 / 成功改
 
 ### 3.5 改写冲突率
 
-Baseline 输出要求包含 `call_mapping`。评估器检查：
+Baseline 输出要求包含 `edit_mapping`（兼容旧结果中的 `call_mapping`）。评估器按“文件—helper”提取声明的 helper，并与改写文件 AST 中实际调用的 `common.py` 顶层 API 比较：
 
 - mapping 声称用了某 helper，但 AST 中没有实际调用。
 - AST 中实际调用了某 helper，但 mapping 没记录。
 - mapping 指向的 helper 不存在于 `common.py`。
-- mapping 声称替换了某段原逻辑，但 diff 中没有对应变化。
+- 严格 diff 是否能应用、删除 hunk 与新增 common 调用是否对应，由抽取阶段的宿主校验器提前检查，不计入这里的冲突率。
 
 计算：
 
@@ -251,7 +254,7 @@ Baseline 输出要求包含 `call_mapping`。评估器检查：
 conflict_rate = conflict_items / max(mapping_items, actual_helper_calls, 1)
 ```
 
-这是软指标，不直接决定 pass/fail，但用于解释“LLM 是否知道自己改了什么”。
+其中 `mapping_items` 和 `actual_helper_calls` 都按每个文件中的唯一 helper 计数，而不是按调用次数计数。这是软指标，不直接决定 pass/fail，只用于解释“LLM 声明的复用关系是否与最终源码一致”。
 
 ---
 
@@ -396,13 +399,13 @@ JSON schema：
 
 发现结果规则：
 
-- `members` 少于 2 个文件的子簇不进入 Step 2。
+- `members` 少于 2 个文件的子簇不进入 Step 2 和 Step 3。
 - `noise` 只记录，不抽取。
 - Step 1 输出保存为 `discovery.json`，用于报告分析。
 
-### 5.3 Step 2：抽取与改写
+### 5.3 Step 2：生成公共库
 
-对 Step 1 每个有效子簇分别调用一次 DeepSeek V4 Flash。
+对 Step 1 每个有效子簇调用一次 DeepSeek V4 Flash，只负责根据发现结果和成员源码设计并生成 `common.py`，不修改成员文件。
 
 输入：
 
@@ -411,7 +414,7 @@ JSON schema：
 - `key_variations`
 - 子簇成员的 `solution` 源码
 
-输出 schema 与 Baseline-a 相同：
+输出：
 
 ```json
 {
@@ -419,17 +422,39 @@ JSON schema：
     "path": "common.py",
     "content": "..."
   },
-  "members": {
-    "file_000.py": {
-      "new_content": "...",
-      "call_mapping": []
-    }
-  },
   "rationale": "..."
 }
 ```
 
-### 5.4 运行逻辑
+### 5.4 Step 3：应用成员改写
+
+将 Step 2 生成的 `common.py`、Step 1 的子簇信息和成员源码交给独立的成员改写调用。该步骤不重新设计公共库，只负责描述每个成员文件如何调用已有 helper。
+
+成员结果只允许包含严格 unified diff 和 `edit_mapping`：
+
+```json
+{
+  "refactors": [
+    {
+      "file_id": "file_000.py",
+      "diff": "...",
+      "edit_mapping": [
+        {
+          "edit_id": "edit_1",
+          "helper": "helper_name",
+          "removed_hunks": [1],
+          "added_hunks": [1],
+          "relationship": "..."
+        }
+      ]
+    }
+  ]
+}
+```
+
+宿主程序将 diff 精确应用到原始成员源码，并检查 helper 存在、删除和新增 hunk 已对应、新增代码确实调用 common helper。检查通过后才写出 `refactored/file_*.py`。
+
+### 5.5 运行逻辑
 
 对每个 `new/<cluster_id>.jsonl`：
 
@@ -440,7 +465,7 @@ results/baseline_b/<cluster_id>/discovery.json
 results/baseline_b/<cluster_id>/discovery_call_log.json
 ```
 
-2. 对每个有效子簇 Step 2 抽取，保存：
+2. 对每个有效子簇执行 Step 2 和 Step 3，保存：
 
 ```text
 results/baseline_b/<cluster_id>/<sub_cluster_id>/common.py
@@ -593,7 +618,7 @@ Baseline-b 额外附表：
 
 
 2 任务设定：输入输出形式化（cluster 源码 → common.py + 改写文件）、功能等价约束、LLM 只可见 solution 源码（不泄漏题名/题面/测试）
-3 方法：3.1 Baseline-a 单次端到端；3.2 Baseline-b 两阶段（发现子簇 → 逐子簇抽取）；3.3 共同设置（温度 0、一次回炉、JSON schema 约束）
+3 方法：3.1 Baseline-a 单次端到端；3.2 Baseline-b 三步流水线（发现子簇 → 生成公共库 → 应用成员 diff）；3.3 共同设置（温度 0、一次回炉、JSON schema 约束）
 4 评估设置：两个数据集（CodeContests 10 簇×30 题 vs Scrapy 24 文件 pytest 套件）、模型（DeepSeek V4 Flash API）、五项指标定义与判定顺序（先 pass 后压缩）
 5 实验结果：按数据集×方法的主表 + 聚合统计，不做逐簇罗列
 6 分析（逐 RQ）：

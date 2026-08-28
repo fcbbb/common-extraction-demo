@@ -19,6 +19,7 @@ from demo.baselines.runner_utils import (
     compile_result,
     load_json_if_exists,
     load_manifest,
+    materialize_surgical_extraction,
     prompt_files_for_cluster,
     read_text,
     run_metrics,
@@ -199,7 +200,7 @@ def call_member_refactors(
         cluster_id,
         {"system": str(system_path), "user_template": str(user_path)},
         f"{raw_prefix}refactor_all",
-        '{"refactors":[{"file_id":"file_000.py","new_content":"...","removed_duplicates":[],"call_mapping":[],"rationale":"..."}]}',
+        '{"refactors":[{"file_id":"file_000.py","diff":"","edit_mapping":[],"call_mapping":[],"rationale":"..."}]}',
         lambda item: require_refactor_batch_schema(item, set(subcluster["members"])),
         repair_context=repair_context,
     )
@@ -230,16 +231,20 @@ def generate_split_extraction(
     for item in refactor_payload["refactors"]:
         file_id = item["file_id"]
         members[file_id] = {
-            "new_content": item["new_content"],
-            "removed_duplicates": item.get("removed_duplicates", []),
+            "diff": item["diff"],
+            "edit_mapping": item["edit_mapping"],
             "call_mapping": item.get("call_mapping", []),
             "rationale": item.get("rationale", ""),
         }
-    return {
+    original_files = {
+        item["file_id"]: item["source_code"]
+        for item in prompt_files_for_cluster(dataset_dir, cluster, subcluster["members"])
+    }
+    return materialize_surgical_extraction({
         "library": library,
         "members": members,
         "rationale": common_payload.get("rationale", ""),
-    }
+    }, original_files)
 
 
 def run_subcluster(
@@ -305,12 +310,25 @@ def run_subcluster(
     if client is None:
         raise LLMConfigurationError("DEEPSEEK_API_KEY is required for subclusters without reusable ok artifacts.")
 
-    extraction = generate_split_extraction(client, cluster, dataset_dir, out_dir, subcluster)
+    try:
+        extraction = generate_split_extraction(client, cluster, dataset_dir, out_dir, subcluster)
+    except ValueError as exc:
+        repair = (
+            "Previous response failed strict surgical-diff validation. Return the same common.py plus exactly one "
+            "member entry per file, with a strict unified diff and edit_mapping. The host applies the diff to the "
+            "original source; do not return new_content. Every deletion hunk must be paired with an added hunk "
+            "that calls a helper defined in common.py. Validation error: "
+            + repr(exc)
+        )
+        extraction = generate_split_extraction(
+            client, cluster, dataset_dir, out_dir, subcluster, raw_prefix="surgical_retry_", repair_context=repair
+        )
     write_extraction_result(out_dir, extraction)
     compile_info = compile_result(out_dir)
     if not compile_info["ok"]:
         repair = (
-            "Previous split extraction failed py_compile. Regenerate common.py and each refactored file as complete JSON. "
+            "Previous split extraction failed py_compile. Return common.py and strict member diffs as valid JSON. "
+            "Do not return new_content; the host applies each diff to the original source. "
             + json.dumps(compile_info, ensure_ascii=False)
         )
         extraction = generate_split_extraction(
@@ -431,8 +449,8 @@ def main() -> None:
     parser.add_argument("--cluster-id", action="append")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--timeout-sec", type=float, default=5.0)
-    parser.add_argument("--api-timeout-sec", type=float, default=60.0)
-    parser.add_argument("--max-output-tokens", type=int, default=16000)
+    parser.add_argument("--api-timeout-sec", type=float, default=None, help="Optional API request timeout")
+    parser.add_argument("--max-output-tokens", type=int, default=None, help="Optional client-side output token limit")
     parser.add_argument("--test-mode", choices=["stdio", "pytest"], default="stdio", help="pytest for the dataset_complex Scrapy slice.")
     parser.add_argument("--test-limit", type=int, default=0, help="Per-file test limit. Use 0 for all tests.")
     parser.add_argument("--compare-mode", choices=["expected", "original"], default="original")

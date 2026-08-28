@@ -18,10 +18,19 @@ def load_mapping(result_dir: Path) -> dict[str, set[str]]:
         members = payload["members"]
     else:
         members = payload
+    raw_members = {}
+    raw_output_path = result_dir / "raw_output.json"
+    if raw_output_path.exists():
+        raw_payload = json.loads(raw_output_path.read_text(encoding="utf-8"))
+        raw_members = raw_payload.get("members") or {}
     mapping: dict[str, set[str]] = {}
     for file_id, member in (members or {}).items():
         helpers: set[str] = set()
-        for item in member.get("call_mapping") or []:
+        mapping_items = member.get("edit_mapping") or member.get("call_mapping") or []
+        if not mapping_items:
+            raw_member = raw_members.get(file_id) or {}
+            mapping_items = raw_member.get("edit_mapping") or raw_member.get("call_mapping") or []
+        for item in mapping_items:
             helper = item.get("helper")
             if isinstance(helper, str) and helper:
                 helpers.add(helper)
