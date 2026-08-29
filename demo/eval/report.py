@@ -195,9 +195,11 @@ def render_report(results_dirs: list[Path]) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build the merged baseline report from result artifacts.")
-    parser.add_argument("--results-dir", action="append", type=Path, default=[ROOT / "demo" / "results" / "codecontest", ROOT / "demo" / "results" / "complex"])
+    parser.add_argument("--results-dir", action="append", type=Path)
     parser.add_argument("--out", type=Path, default=ROOT / "demo" / "reports" / "report.md")
     args = parser.parse_args()
+    if not args.results_dir:
+        args.results_dir = [ROOT / "demo" / "results" / "codecontest", ROOT / "demo" / "results" / "complex"]
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(render_report(args.results_dir), encoding="utf-8")
     print(f"Wrote {args.out}")
