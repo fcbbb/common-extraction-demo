@@ -248,6 +248,7 @@ def _common_usage(content: str, api_names: set[str]) -> set[str]:
     module_aliases: set[str] = set()
     imported_api_names: dict[str, str] = {}
     wildcard_import = False
+    used: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for item in node.names:
@@ -259,8 +260,11 @@ def _common_usage(content: str, api_names: set[str]) -> set[str]:
                     wildcard_import = True
                 elif item.name in api_names:
                     imported_api_names[item.asname or item.name] = item.name
+                    # An explicit import is itself a real dependency on common.py.
+                    # This also covers facade modules that re-export common names
+                    # without referencing them again in an expression.
+                    used.add(item.name)
 
-    used: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
             api = imported_api_names.get(node.id)
@@ -271,18 +275,63 @@ def _common_usage(content: str, api_names: set[str]) -> set[str]:
         elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
             if node.value.id in module_aliases and node.attr in api_names:
                 used.add(node.attr)
+    if wildcard_import:
+        used.update(api_names)
     return used
 
 
 def _common_export_names(tree: ast.Module) -> set[str]:
-    names: set[str] = set()
+    """Collect names available from a module, including imported aliases."""
+
+    class ExportCollector(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.names: set[str] = set()
+            self.all_names: set[str] = set()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self.names.add(node.name)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self.names.add(node.name)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self.names.add(node.name)
+
+        def visit_Import(self, node: ast.Import) -> None:
+            for item in node.names:
+                self.names.add(item.asname or item.name.split(".", 1)[0])
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            for item in node.names:
+                if item.name != "*":
+                    self.names.add(item.asname or item.name)
+
+        def visit_Assign(self, node: ast.Assign) -> None:
+            targets = node.targets
+            self.names.update(target.id for target in targets if isinstance(target, ast.Name))
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id == "__all__":
+                    try:
+                        values = ast.literal_eval(node.value)
+                    except (ValueError, TypeError, SyntaxError):
+                        continue
+                    if isinstance(values, (list, tuple, set)):
+                        self.all_names.update(item for item in values if isinstance(item, str))
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            if isinstance(node.target, ast.Name):
+                self.names.add(node.target.id)
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            # Do not collect imports/assignments from nested executable scopes.
+            return
+
+    collector = ExportCollector()
     for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            names.add(node.name)
-        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            names.update(target.id for target in targets if isinstance(target, ast.Name))
-    return names
+        collector.visit(node)
+    collector.names.update(collector.all_names)
+    collector.names.discard("__all__")
+    return collector.names
 
 
 def validate_common_usage(
