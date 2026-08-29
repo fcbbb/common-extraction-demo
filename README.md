@@ -128,7 +128,7 @@ conda run -n qwen-gguf python -m demo.eval.report \
 
 | 指标 | 含义 |
 |---|---|
-| pass file % / pass test % | 功能等价性。matched 要求改写输出与原始输出一致；上限是原始文件自身在测试集上的通过率，与原始通过率之差才是改写引入的退化 |
+| pass file % / pass test % | 功能等价性。先用原始代码筛出通过的测试，再计算重构版在该子集上的比例；分母分别是含原始通过测试的文件数和原始通过测试数 |
 | MDL compression | 改写后 vs 原文件在参照 LM（GGUF 模型）下的 log-likelihood 压缩率 |
 | token compression | 改写前后 token 数压缩率 |
 | file API coverage / API usage coverage | 公共代码中被成员文件实际使用的 API 占比 |

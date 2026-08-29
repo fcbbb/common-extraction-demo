@@ -33,7 +33,7 @@ python3 -m demo.baselines.run_baseline_a --cluster-id 0
 python3 -m demo.baselines.run_baseline_b --cluster-id 0
 ```
 
-By default the pass-rate policy follows the stricter baseline-plan check: all tests, compare the refactored program output to the original `solution` output with whitespace normalization. To run the Librarian-compatible merge-stage policy instead, use:
+The evaluator first runs the original solution and keeps only tests it passes; the refactored pass rate is calculated over that valid baseline subset. Token and MDL measurements exclude comments and docstrings, retaining executable code only. By default it compares the refactored program output to the original `solution` output with whitespace normalization. To run the Librarian-compatible merge-stage policy instead, use:
 
 ```bash
 python3 -m demo.baselines.run_baseline_a --cluster-id 0 --test-limit 10 --compare-mode expected --normalize strip
@@ -107,6 +107,10 @@ conda run -n qwen-gguf python -m demo.baselines.run_baseline_b \
   --test-mode pytest --timeout-sec 120
 ```
 
+To evaluate an alternate existing result directory such as
+`demo/results/complex_edits/`, use `RESULTS_SUFFIX=_edits` with
+`docs/run_eval.sh`.
+
 To recompute metrics for existing extraction artifacts:
 
 ```bash
@@ -126,9 +130,11 @@ root (so refactored `import common` works), and the dataset's `tests/` dir plus
 the vendored upstream root `conftest.py` (`demo/eval/pytest_conftest.py`, which
 provides the `mockserver` fixture and `--reactor=asyncio`) are copied in. Each
 test file is run once for the original layout and once for the refactored
-layout; a test case counts as matched when its outcome (pass/fail/error/skip)
-is identical in both. Skips (e.g. optional deps like reppy/mitmproxy) affect
-both runs equally. `test_limit` does not apply in pytest mode.
+layout. Only cases that pass in the original layout are selected for the
+refactored run and reported denominator; a selected case counts as matched when
+the refactored case also passes. Skips (e.g. optional deps like
+reppy/mitmproxy) are therefore excluded from the denominator. `test_limit` does
+not apply in pytest mode.
 
 ## Slurm Submission
 

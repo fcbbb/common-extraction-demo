@@ -8,8 +8,8 @@ The slice's tests are upstream pytest unit tests importing `scrapy.*` and
   their real package paths),
 - `common.py` is placed at the temp root so refactored `import common` works,
 - the dataset's `tests/` directory (including upstream test infra) is copied,
-- pytest runs each test file once for the original layout and once for the
-  refactored layout, and outcomes are compared per test case.
+- pytest runs each test file once for the original layout, then runs only the
+  original-passing cases for the refactored layout.
 
 Result shapes mirror run_tests.py so the metrics/report pipeline is unchanged.
 """
@@ -125,11 +125,23 @@ def parse_junit(xml_path: Path) -> tuple[list[dict[str, Any]], dict[str, int]]:
     return cases, counts
 
 
-def run_pytest_file(tmp: Path, test_file: str, timeout_sec: float) -> dict[str, Any]:
+def run_pytest_file(
+    tmp: Path,
+    test_file: str,
+    timeout_sec: float,
+    selected_cases: set[str] | None = None,
+) -> dict[str, Any]:
     junit = tmp / "junit.xml"
     if junit.exists():
         junit.unlink()
     env = {**os.environ, "PYTHONPATH": str(tmp)}
+    if selected_cases is not None:
+        # pytest_conftest.py uses this to deselect cases that the original
+        # implementation did not pass.  An explicit empty set is meaningful:
+        # it prevents running a whole file when no baseline case is eligible.
+        env["COMMON_EXTRACTION_SELECTED_CASES"] = json.dumps(sorted(selected_cases))
+    else:
+        env.pop("COMMON_EXTRACTION_SELECTED_CASES", None)
     try:
         proc = subprocess.run(
             [sys.executable, "-m", "pytest", *PYTEST_ARGS, f"--junitxml={junit}", f"tests/{test_file}"],
@@ -166,6 +178,7 @@ def run_pytest_files_parallel(
     timeout_sec: float,
     label: str,
     workers: int | None,
+    selected_cases: dict[str, set[str]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Run each pytest test file in its own overlay dir, in parallel.
 
@@ -179,7 +192,8 @@ def run_pytest_files_parallel(
     def run_one(name: str) -> dict[str, Any]:
         with tempfile.TemporaryDirectory(prefix="pytest_eval_") as tmp:
             build_overlay(Path(tmp), cluster, dataset_dir, result_dir)
-            return run_pytest_file(Path(tmp), name, timeout_sec)
+            cases = None if selected_cases is None else selected_cases.get(name, set())
+            return run_pytest_file(Path(tmp), name, timeout_sec, cases)
 
     done = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
@@ -222,8 +236,9 @@ def iter_file_tests(cluster: dict[str, Any]) -> list[tuple[str, str]]:
     pairs = []
     for entry in cluster["files"]:
         for name in entry.get("tests", {}).get("pytest", []):
-            if name not in seen:
-                seen.add(name)
+            if name in seen:
+                continue
+            seen.add(name)
             pairs.append((entry["file_id"], name))
     return pairs
 
@@ -243,9 +258,14 @@ def run_pytest_both(
         cluster, dataset_dir, None, all_test_files, timeout_sec,
         f"pytest original cluster {cluster_id}", workers,
     )
+    baseline_passed_cases = {
+        name: {case["name"] for case in run["cases"] if case["outcome"] == "passed"}
+        for name, run in original_runs.items()
+    }
     refactored_runs = run_pytest_files_parallel(
         cluster, dataset_dir, result_dir, all_test_files, timeout_sec,
         f"pytest refactored cluster {cluster_id}", workers,
+        selected_cases=baseline_passed_cases,
     )
     return original_runs, refactored_runs
 
@@ -261,58 +281,99 @@ def test_refactored_cluster(
     workers: int | None = None,
 ) -> dict[str, Any]:
     del test_limit, normalize  # no stdin cases in pytest mode
+    if compare_mode not in {"expected", "original"}:
+        raise ValueError(f"Unknown compare mode: {compare_mode}")
     cluster_id = cluster["cluster_id"]
     original_runs, refactored_runs = run_pytest_both(cluster, dataset_dir, result_dir, timeout_sec, workers)
 
-    totals = {"tests": 0, "matched_original": 0, "files": 0, "files_matched_original": 0}
+    totals = {
+        "tests": 0,
+        "matched_original": 0,
+        "files": 0,
+        "files_matched_original": 0,
+        "candidate_tests": 0,
+        "baseline_passed_tests": 0,
+        "candidate_files": 0,
+        "baseline_passed_files": 0,
+    }
     file_results = []
     pairs = iter_file_tests(cluster)
     per_file_tests: dict[str, list[dict[str, Any]]] = {}
     for _, name in pairs:
         original = original_runs[name]
-        refactored = refactored_runs[name]
-        if compare_mode == "expected":
-            matched_count = sum(1 for case in refactored["cases"] if case["outcome"] == "passed")
-            matched = suite_ok(refactored)
-        elif compare_mode == "original":
-            matched_count = match_cases(original, refactored)
-            matched = (original["counts"]["total"] == refactored["counts"]["total"] and matched_count == refactored["counts"]["total"])
-        else:
-            raise ValueError(f"Unknown compare mode: {compare_mode}")
-        entry = {
-            "test_file": name,
-            "group": "pytest",
-            "test_index": 0,
-            "original": {"counts": original["counts"], "timed_out": original.get("timed_out", False)},
-            "refactored": {"counts": refactored["counts"], "timed_out": refactored.get("timed_out", False)},
-            "matched_original": matched,
-        }
-        totals["tests"] += refactored["counts"]["total"]
-        totals["matched_original"] += matched_count
-        for file_id, test_name in pairs:
-            if test_name == name:
-                per_file_tests.setdefault(file_id, []).append(entry)
+        refactored = refactored_runs.get(name)
+        original_cases = [case for case in original["cases"] if case["outcome"] == "passed"]
+        totals["candidate_tests"] += original["counts"]["total"]
+        totals["baseline_passed_tests"] += len(original_cases)
+        ref_cases = {case["name"]: case for case in (refactored or {}).get("cases", [])}
+        for case in original_cases:
+            ref_case = ref_cases.get(case["name"])
+            matched = ref_case is not None and ref_case["outcome"] == "passed"
+            entry = {
+                "test_file": name,
+                "case": case["name"],
+                "group": "pytest",
+                "test_index": 0,
+                "original": {"outcome": case["outcome"]},
+                "refactored": ref_case,
+                "matched_original": matched,
+            }
+            totals["tests"] += 1
+            totals["matched_original"] += int(matched)
+            for file_id, test_name in pairs:
+                if test_name == name:
+                    per_file_tests.setdefault(file_id, []).append(entry)
 
-    for file_id, tests in per_file_tests.items():
+    mapped_file_ids = list(dict.fromkeys(file_id for file_id, _ in pairs))
+    for file_id in mapped_file_ids:
+        tests = per_file_tests.get(file_id, [])
+        # A file with no original-passing cases is not part of the evaluation
+        # denominator.  Counting it as an empty successful file would inflate
+        # the file pass rate.
+        if not tests:
+            file_results.append({"file_id": file_id, "status": "not_evaluated", "tests": []})
+            continue
         file_ok = all(item["matched_original"] for item in tests)
         totals["files"] += 1
         totals["files_matched_original"] += int(file_ok)
         file_results.append({"file_id": file_id, "status": "ok" if file_ok else "failed", "tests": tests})
 
+    totals["candidate_files"] = len({
+        file_id for file_id, name in pairs if original_runs[name]["counts"]["total"]
+    })
+    totals["baseline_passed_files"] = len({
+        file_id for file_id, tests in per_file_tests.items() if tests
+    })
+
     shared_results = []
     for name in cluster.get("shared_test_files", []):
         original = original_runs[name]
-        refactored = refactored_runs[name]
-        if compare_mode == "expected":
-            matched = suite_ok(refactored)
-        else:
-            matched = (original["counts"]["total"] == refactored["counts"]["total"] and match_cases(original, refactored) == refactored["counts"]["total"])
-        shared_results.append({"test_file": name, "matched_original": matched, "original": original["counts"], "refactored": refactored["counts"]})
+        refactored = refactored_runs.get(name)
+        eligible = [case for case in original["cases"] if case["outcome"] == "passed"]
+        ref_cases = {case["name"]: case for case in (refactored or {}).get("cases", [])}
+        matched_count = sum(
+            ref_cases.get(case["name"], {}).get("outcome") == "passed"
+            for case in eligible
+        )
+        shared_results.append(
+            {
+                "test_file": name,
+                "matched_original": bool(eligible) and matched_count == len(eligible),
+                "eligible_tests": len(eligible),
+                "matched_tests": matched_count,
+                "original": original["counts"],
+                "refactored": (refactored or {}).get("counts", {"total": 0, "passed": 0, "failed": 0, "errors": 0, "skipped": 0}),
+            }
+        )
 
     return {
         "cluster_id": cluster_id,
         "scope": "refactored",
         "result_dir": str(result_dir),
+        "test_policy": {
+            "baseline_filter": "original_passed_only",
+            "description": "Only pytest cases passed by the original solution are evaluated for the refactored solution.",
+        },
         "summary": {
             **totals,
             "test_pass_rate": totals["matched_original"] / totals["tests"] if totals["tests"] else None,

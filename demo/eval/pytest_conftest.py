@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from importlib.util import find_spec
 from pathlib import Path
@@ -108,6 +109,27 @@ def pytest_configure(config):
 
 
 def pytest_collection_modifyitems(items):
+    selected_cases_raw = os.environ.get("COMMON_EXTRACTION_SELECTED_CASES")
+    if selected_cases_raw is not None:
+        selected_cases = set(json.loads(selected_cases_raw))
+        retained = []
+        for item in items:
+            module_name = item.module.__name__
+            class_name = getattr(item, "cls", None)
+            module_stem = Path(str(item.fspath)).stem
+            class_stem = class_name.__name__ if class_name is not None else None
+            classnames = {
+                module_name,
+                module_name.rsplit(".", 1)[-1],
+                module_stem,
+            }
+            if class_stem is not None:
+                classnames = {f"{classname}.{class_stem}" for classname in classnames}
+            candidates = {f"{classname}::{item.name}" for classname in classnames}
+            if candidates & selected_cases:
+                retained.append(item)
+        items[:] = retained
+
     for item in items:
         if item.get_closest_marker("requires_internet"):
             # Requests to real websites fail every now and then in CI for

@@ -4,8 +4,12 @@ import argparse
 import json
 import math
 import os
+import sys
+import time
 from pathlib import Path
 from typing import Any
+
+from demo.eval.measure_tokens import strip_non_code
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -20,29 +24,82 @@ def stable_logsumexp(values: Any) -> float:
     return max_value + math.log(sum(math.exp(float(value) - max_value) for value in values))
 
 
-def negative_log_likelihood(llm: Any, text: str, n_ctx: int) -> dict[str, object]:
+def log_progress(message: str) -> None:
+    print(f"[MDL] {message}", file=sys.stderr, flush=True)
+
+
+def batched_nll(scores: Any, targets: list[int], batch_size: int) -> float:
+    """Compute token NLL with NumPy instead of Python loops over the vocabulary."""
+    import numpy as np
+
+    target_array = np.asarray(targets, dtype=np.intp)
+    logits = np.asarray(scores, dtype=np.float32)
+    # llama.cpp may expose the whole preallocated score buffer.  The final
+    # context chunk can contain fewer tokens than that buffer, so only the
+    # rows corresponding to the requested target tokens are valid here.
+    logits = logits[: len(target_array)]
+    if logits.ndim != 2 or logits.shape[0] != len(target_array):
+        raise ValueError(
+            f"Expected one score row per target token, got scores shape {logits.shape} "
+            f"for {len(target_array)} targets"
+        )
+    total = 0.0
+    for start in range(0, len(target_array), batch_size):
+        block = logits[start : start + batch_size]
+        block_targets = target_array[start : start + batch_size]
+        row_max = np.max(block, axis=1)
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+            log_z = row_max + np.log(
+                np.exp(block - row_max[:, None]).sum(axis=1, dtype=np.float64)
+            )
+        row_indices = np.arange(len(block_targets))
+        total += float(
+            np.sum(log_z - block[row_indices, block_targets], dtype=np.float64)
+        )
+    return total
+
+
+def negative_log_likelihood(
+    llm: Any,
+    text: str,
+    n_ctx: int,
+    label: str = "NLL",
+    score_batch_size: int = 64,
+) -> dict[str, object]:
     tokens = llm.tokenize(text.encode("utf-8"), add_bos=True)
     if len(tokens) < 2:
         return {"nll": 0.0, "tokens_scored": 0, "tokens_total": len(tokens)}
+    if score_batch_size <= 0:
+        raise ValueError(f"score_batch_size must be positive, got {score_batch_size}")
 
     chunk_payload = max(1, n_ctx - 1)
+    total_tokens = len(tokens) - 1
+    total_chunks = (total_tokens + chunk_payload - 1) // chunk_payload
     nll = 0.0
     scored = 0
     chunks = 0
+    started = time.monotonic()
 
     for start in range(1, len(tokens), chunk_payload):
         chunk = [tokens[0], *tokens[start : start + chunk_payload]]
         if len(chunk) < 2:
             continue
+        chunk_tokens = len(chunk) - 1
+        log_progress(
+            f"{label}: starting chunk {chunks + 1}/{total_chunks} "
+            f"({scored}/{total_tokens} tokens complete)"
+        )
         llm.reset()
         llm.eval(chunk)
-        scores = llm.scores
-        for idx in range(1, len(chunk)):
-            target = chunk[idx]
-            logits = scores[idx - 1]
-            nll += stable_logsumexp(logits) - float(logits[target])
-            scored += 1
+        nll += batched_nll(llm.scores, chunk[1:], score_batch_size)
+        scored += chunk_tokens
         chunks += 1
+        elapsed = time.monotonic() - started
+        rate = scored / elapsed if elapsed else 0.0
+        log_progress(
+            f"{label}: finished chunk {chunks}/{total_chunks} "
+            f"({scored}/{total_tokens} tokens, {rate:.1f} tokens/s, {elapsed:.1f}s elapsed)"
+        )
 
     return {
         "nll": nll,
@@ -101,8 +158,8 @@ def measure_mdl(
         ids = set(file_ids)
         original_files = [f for f in original_files if f.name in ids]
         refactored_files = [f for f in refactored_files if f.name in ids]
-    before_text = concat_files(original_files)
-    after_text = concat_files([result_dir / "common.py", *refactored_files])
+    before_text = strip_non_code(concat_files(original_files))
+    after_text = strip_non_code(concat_files([result_dir / "common.py", *refactored_files]))
     if not before_text or not after_text:
         return {
             "status": "error",
@@ -120,7 +177,21 @@ def measure_mdl(
     resolved_n_gpu_layers = n_gpu_layers if n_gpu_layers is not None else int(os.getenv("N_GPU_LAYERS", "-1"))
     resolved_n_batch = n_batch or int(os.getenv("N_BATCH", "256"))
     resolved_verbose = verbose if verbose is not None else os.getenv("LLAMA_VERBOSE", "0") == "1"
+    score_batch_size = int(os.getenv("MDL_SCORE_BATCH_SIZE", "64"))
+    if score_batch_size <= 0:
+        return {
+            "status": "error",
+            "reason": f"MDL_SCORE_BATCH_SIZE must be positive, got {score_batch_size}",
+            "mdl_before": None,
+            "mdl_after": None,
+            "mdl_compression": None,
+        }
 
+    log_progress(
+        f"loading model {model_path} (comments/docstrings excluded, n_ctx={resolved_n_ctx}, "
+        f"n_gpu_layers={resolved_n_gpu_layers}, n_batch={resolved_n_batch}, "
+        f"score_batch_size={score_batch_size})"
+    )
     llm = Llama(
         model_path=str(model_path),
         n_gpu_layers=resolved_n_gpu_layers,
@@ -129,13 +200,24 @@ def measure_mdl(
         logits_all=True,
         verbose=resolved_verbose,
     )
+    log_progress("model loaded; starting before NLL")
 
-    before = negative_log_likelihood(llm, before_text, resolved_n_ctx)
-    after = negative_log_likelihood(llm, after_text, resolved_n_ctx)
+    before = negative_log_likelihood(
+        llm, before_text, resolved_n_ctx, label="before", score_batch_size=score_batch_size
+    )
+    log_progress("before NLL complete; starting after NLL")
+    after = negative_log_likelihood(
+        llm, after_text, resolved_n_ctx, label="after", score_batch_size=score_batch_size
+    )
     mdl_before = float(before["nll"])
     mdl_after = float(after["nll"])
+    log_progress(
+        f"after NLL complete; mdl_before={mdl_before:.3f}, mdl_after={mdl_after:.3f}"
+    )
     return {
         "status": "ok",
+        "comments_excluded": True,
+        "docstrings_excluded": True,
         "reference_lm": {
             "backend": "llama-cpp-python",
             "model_path": str(model_path),

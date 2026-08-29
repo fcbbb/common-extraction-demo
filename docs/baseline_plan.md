@@ -154,7 +154,7 @@ demo/
 
 | 编号 | 指标 | 角色 | 计算对象 |
 |---|---|---|---|
-| 1 | **pass rate** | 功能等价硬约束 | 原 `solution` vs `common.py + refactored/*.py` 在同一测试集上的通过率 |
+| 1 | **pass rate** | 功能等价硬约束 | 先筛选原 `solution` 已通过的测试，再统计 `common.py + refactored/*.py` 在该有效子集上的通过率 |
 | 2 | **MDL 压缩率** | 主指标 | 原始源码包 vs 抽库改写后源码包的 NLL |
 | 3 | **tokens 压缩率** | 辅指标 | 原始源码包 token 数 vs `common.py + refactored` token 数 |
 | 4 | **API coverage** | 结构约束 | `common.py` 暴露 API 被改写文件实际使用的覆盖情况 |
@@ -168,7 +168,7 @@ demo/
 public_tests + private_tests + generated_tests
 ```
 
-改写后，对每个 `refactored/file_xxx.py` 在同一测试集上执行：
+改写后，只对原始 `solution` 已通过的测试子集执行 `refactored/file_xxx.py`：
 
 - `common.py` 与改写文件放在同一目录。
 - 改写文件使用 `from common import ...` 或 `import common`。
@@ -177,8 +177,8 @@ public_tests + private_tests + generated_tests
 报告两个层级：
 
 ```text
-test_pass_rate = passed_tests / total_tests
-file_pass_rate = all_tests_passed_files / total_files
+test_pass_rate = refactored_passed_tests / original_passed_tests
+file_pass_rate = all_eligible_files_passed / files_with_original_passed_tests
 ```
 
 主表使用 `file_pass_rate`，附表保留 `test_pass_rate`。

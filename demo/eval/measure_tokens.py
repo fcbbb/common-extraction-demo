@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import io
 import json
 import tokenize
@@ -60,6 +61,50 @@ def strip_comments(text: str) -> str:
     return "".join(parts)
 
 
+def strip_docstrings(text: str) -> str:
+    """Remove module, class, and function docstrings while preserving lines."""
+    tree = ast.parse(text)
+    docstring_starts = set()
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if not body or not isinstance(body, list):
+            continue
+        first = body[0]
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            docstring_starts.add((first.value.lineno, first.value.col_offset))
+
+    if not docstring_starts:
+        return text
+
+    offsets = [0]
+    for line in text.splitlines(keepends=True):
+        offsets.append(offsets[-1] + len(line))
+    spans = []
+    for token in tokenize.generate_tokens(io.StringIO(text).readline):
+        if token.type == tokenize.STRING and token.start in docstring_starts:
+            start = offsets[token.start[0] - 1] + token.start[1]
+            end = offsets[token.end[0] - 1] + token.end[1]
+            spans.append((start, end))
+
+    parts = []
+    cursor = 0
+    for start, end in spans:
+        parts.append(text[cursor:start])
+        parts.append("".join("\n" if char == "\n" else " " for char in text[start:end]))
+        cursor = end
+    parts.append(text[cursor:])
+    return "".join(parts)
+
+
+def strip_non_code(text: str) -> str:
+    """Remove comments and documentation strings, retaining executable code."""
+    return strip_docstrings(strip_comments(text))
+
+
 def concat_files(paths: list[Path]) -> str:
     return "\n\n".join(path.read_text(encoding="utf-8") for path in paths if path.exists())
 
@@ -77,13 +122,14 @@ def measure(
         refactored_files = [f for f in refactored_files if f.name in ids]
     before_text = concat_files(original_files)
     after_text = concat_files([result_dir / "common.py", *refactored_files])
-    before_tokens, tokenizer = count_tokens(strip_comments(before_text))
-    after_tokens, after_tokenizer = count_tokens(strip_comments(after_text))
+    before_tokens, tokenizer = count_tokens(strip_non_code(before_text))
+    after_tokens, after_tokenizer = count_tokens(strip_non_code(after_text))
     if tokenizer != after_tokenizer:
         raise RuntimeError(f"Tokenizer mismatch: {tokenizer} vs {after_tokenizer}")
     return {
         "tokenizer": tokenizer,
         "comments_excluded": True,
+        "docstrings_excluded": True,
         "tokens_before": before_tokens,
         "tokens_after": after_tokens,
         "token_ratio_after_before": after_tokens / before_tokens if before_tokens else None,

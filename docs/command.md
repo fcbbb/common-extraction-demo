@@ -15,6 +15,7 @@
 | `DATASET` | `codecontest` | `codecontest` / `complex` |
 | `BASELINE` | extract: `both`；eval: `a` | `a` / `b` / `both` |
 | `CLUSTER_ID` | extract: `all`；eval: `all` | `0..9` 或 `all` |
+| `RESULTS_SUFFIX` | 空字符串 | 结果目录后缀，例如 `_edits` 对应 `demo/results/complex_edits` |
 | `DEEPSEEK_API_KEY` | - | extract 必需（除非 `RESUME=1` 全命中） |
 | `DEEPSEEK_MODEL` | `deepseek-v4-flash` | 抽取用的模型 |
 | `RESUME` | `0` | `1` 跳过已 ok 的 cluster/subcluster；有未完成部分仍会调 DeepSeek 补跑 |
@@ -24,6 +25,7 @@
 | `NORMALIZE` | `whitespace` | `whitespace` / `strip` |
 | `MODEL_PATH` | `model/Qwen3.8-27B-Q4_K_M.gguf` | eval 的 MDL 模型；文件不存在则 MDL 记 not_available |
 | `N_CTX` / `N_GPU_LAYERS` / `N_BATCH` | `4096` / `-1` / `256` | llama.cpp 参数 |
+| `MDL_SCORE_BATCH_SIZE` | `64` | MDL logits 的 NumPy 分块大小；显存/内存紧张时可调小 |
 
 ## 推荐流程（两阶段）
 

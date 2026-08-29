@@ -22,6 +22,7 @@ CONDA_ENV="${CONDA_ENV:-qwen-gguf}"
 DATASET="${DATASET:-codecontest}"         # codecontest (default) or complex (Scrapy slice)
 BASELINE="${BASELINE:-a}"                 # a, b, or both
 CLUSTER_ID="${CLUSTER_ID:-all}"           # 0..9, or all
+RESULTS_SUFFIX="${RESULTS_SUFFIX:-}"       # optional result directory suffix, e.g. _edits
 TEST_TIMEOUT_SEC="${TEST_TIMEOUT_SEC:-5}"
 TEST_LIMIT="${TEST_LIMIT:-0}"             # 0 means all tests
 COMPARE_MODE="${COMPARE_MODE:-original}"  # original or expected
@@ -39,13 +40,13 @@ case "$DATASET" in
   codecontest)
     MANIFEST="$PROJECT_DIR/demo/datasets/codecontest/cluster_manifest.json"
     DATASET_DIR="$PROJECT_DIR/demo/datasets/codecontest"
-    RESULTS_DIR="$PROJECT_DIR/demo/results/codecontest"
+    RESULTS_DIR="$PROJECT_DIR/demo/results/codecontest${RESULTS_SUFFIX}"
     TEST_MODE=stdio
     ;;
   complex)
     MANIFEST="$PROJECT_DIR/demo/datasets/complex/cluster_manifest.json"
     DATASET_DIR="$PROJECT_DIR/demo/datasets/complex"
-    RESULTS_DIR="$PROJECT_DIR/demo/results/complex"
+    RESULTS_DIR="$PROJECT_DIR/demo/results/complex${RESULTS_SUFFIX}"
     TEST_MODE=pytest
     ;;
   *)
@@ -89,6 +90,7 @@ log "Project: $PROJECT_DIR"
 log "Conda env: $CONDA_ENV"
 log "Dataset: $DATASET"
 log "Results dir: $RESULTS_DIR"
+log "Results suffix: $RESULTS_SUFFIX"
 log "Baseline: $BASELINE"
 log "Cluster: $CLUSTER_ID"
 log "Test policy: limit=$TEST_LIMIT compare=$COMPARE_MODE normalize=$NORMALIZE"
@@ -150,10 +152,15 @@ run_cmd python -u -m demo.eval.run_existing_metrics \
   --normalize "$NORMALIZE" \
   --test-mode "$TEST_MODE"
 
-run_cmd python -u -m demo.eval.report \
-  --results-dir "$PROJECT_DIR/demo/results/codecontest" \
-  --results-dir "$PROJECT_DIR/demo/results/complex" \
-  --out "$REPORT_OUT"
+report_args=(--results-dir "$RESULTS_DIR" --out "$REPORT_OUT")
+if [[ -z "$RESULTS_SUFFIX" ]]; then
+  report_args=(
+    --results-dir "$PROJECT_DIR/demo/results/codecontest"
+    --results-dir "$PROJECT_DIR/demo/results/complex"
+    --out "$REPORT_OUT"
+  )
+fi
+run_cmd python -u -m demo.eval.report "${report_args[@]}"
 
 log "Recent MDL metrics:"
 find "$RESULTS_DIR" -maxdepth 4 -name mdl_metrics.json -type f -print | sort | while read -r path; do

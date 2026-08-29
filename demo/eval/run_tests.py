@@ -33,6 +33,15 @@ def normalize_output(text: str, mode: str) -> str:
     raise ValueError(f"Unknown normalization mode: {mode}")
 
 
+def original_test_passed(test: dict[str, Any], run: dict[str, Any], normalize: str) -> bool:
+    """Return whether an original stdio solution passed one manifest test."""
+    return (
+        run["returncode"] == 0
+        and not run["timed_out"]
+        and normalize_output(run["stdout"], normalize) == normalize_output(test["expected"], normalize)
+    )
+
+
 def run_python_file(path: Path, stdin: str, timeout_sec: float) -> dict[str, Any]:
     proc = subprocess.run(
         [sys.executable, str(path)],
@@ -155,11 +164,7 @@ def test_original_cluster(
         tests = []
         file_expected_ok = True
         for test, result in by_file.get(file_id, []):
-            expected_ok = (
-                result["returncode"] == 0
-                and not result["timed_out"]
-                and normalize_output(result["stdout"], normalize) == normalize_output(test["expected"], normalize)
-            )
+            expected_ok = original_test_passed(test, result, normalize)
             tests.append({**test, "run": result, "expected_ok": expected_ok})
             totals["tests"] += 1
             totals["expected_passed"] += int(expected_ok)
@@ -201,14 +206,40 @@ def test_refactored_cluster(
     refactored_dir = result_dir / "refactored"
     workers = resolve_workers(workers)
 
+    # Establish the before-rewrite baseline first.  Refactored code is evaluated
+    # only on tests that the original solution actually passes; otherwise the
+    # denominator would include known-bad tests and make the reported rate
+    # measure the dataset defects rather than the rewrite.
+    original_tasks = []
+    refactored_paths: dict[str, Path] = {}
+    for file_entry in cluster["files"]:
+        file_id = file_entry["file_id"]
+        path = original_dir / file_id
+        refactored_path = refactored_dir / file_id
+        if refactored_path.exists():
+            refactored_paths[file_id] = refactored_path
+        for test in iter_tests(file_entry, test_limit):
+            original_tasks.append(("original", file_id, path, test))
+    original_runs = run_tasks_parallel(original_tasks, workers, timeout_sec, f"original cluster {cluster_id}")
+
+    original_by_file: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+    for _, file_id, test, run in original_runs:
+        original_by_file.setdefault(file_id, []).append((test, run))
+
+    eligible_by_file: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+    for file_id, file_runs in original_by_file.items():
+        eligible_by_file[file_id] = [
+            (test, run) for test, run in file_runs if original_test_passed(test, run, normalize)
+        ]
+
     tasks = []
     tmp_dirs: list[tempfile.TemporaryDirectory] = []
     missing: list[str] = []
     try:
         for file_entry in cluster["files"]:
             file_id = file_entry["file_id"]
-            refactored_path = refactored_dir / file_id
-            if not refactored_path.exists():
+            refactored_path = refactored_paths.get(file_id)
+            if refactored_path is None:
                 missing.append(file_id)
                 continue
             tmp = tempfile.TemporaryDirectory(prefix="baseline_eval_")
@@ -217,46 +248,74 @@ def test_refactored_cluster(
             copy_common_for_run(result_dir, tmp_dir)
             runnable = tmp_dir / file_id
             runnable.write_text(refactored_path.read_text(encoding="utf-8"))
-            tests = list(iter_tests(file_entry, test_limit))
-            for test in tests:
+            for test, _ in eligible_by_file.get(file_id, []):
                 tasks.append(("refactored", file_id, runnable, test))
-                if compare_mode == "original":
-                    tasks.append(("original", file_id, original_dir / file_id, test))
         runs = run_tasks_parallel(tasks, workers, timeout_sec, f"refactored cluster {cluster_id}")
     finally:
         for tmp in tmp_dirs:
             tmp.cleanup()
 
-    by_file: dict[str, dict[str, list[tuple[dict[str, Any], dict[str, Any]]]]] = {}
-    for kind, file_id, test, run in runs:
-        by_file.setdefault(file_id, {}).setdefault(kind, []).append((test, run))
+    refactored_by_file: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+    for _, file_id, test, run in runs:
+        refactored_by_file.setdefault(file_id, []).append((test, run))
 
     file_results = []
-    totals = {"tests": 0, "matched_original": 0, "files": 0, "files_matched_original": 0}
+    totals = {
+        "tests": 0,
+        "matched_original": 0,
+        "files": 0,
+        "files_matched_original": 0,
+        "candidate_tests": sum(len(list(iter_tests(file_entry, test_limit))) for file_entry in cluster["files"]),
+        "baseline_passed_tests": sum(len(tests) for tests in eligible_by_file.values()),
+        "candidate_files": sum(bool(list(iter_tests(file_entry, test_limit))) for file_entry in cluster["files"]),
+        "baseline_passed_files": sum(bool(tests) for tests in eligible_by_file.values()),
+    }
     for file_entry in cluster["files"]:
         file_id = file_entry["file_id"]
-        if file_id in missing:
-            file_results.append({"file_id": file_id, "status": "missing_refactored", "tests": []})
-            totals["files"] += 1
+        eligible = eligible_by_file.get(file_id, [])
+        if not eligible:
+            file_results.append({"file_id": file_id, "status": "not_evaluated", "tests": []})
             continue
-        ref_runs = by_file.get(file_id, {}).get("refactored", [])
-        orig_runs = by_file.get(file_id, {}).get("original", []) if compare_mode == "original" else []
+        totals["files"] += 1
+        if file_id in missing:
+            totals["files_matched_original"] += 0
+            file_results.append(
+                {
+                    "file_id": file_id,
+                    "status": "missing_refactored",
+                    "tests": [
+                        {
+                            "group": test["group"],
+                            "test_index": test["test_index"],
+                            "original": original_result,
+                            "refactored": None,
+                            "matched_original": False,
+                        }
+                        for test, original_result in eligible
+                    ],
+                }
+            )
+            continue
+
+        ref_runs = refactored_by_file.get(file_id, [])
+        ref_by_key = {(test["group"], test["test_index"]): run for test, run in ref_runs}
         tests = []
         file_ok = True
-        for position, (test, refactored_result) in enumerate(ref_runs):
+        for test, original_result in eligible:
+            refactored_result = ref_by_key.get((test["group"], test["test_index"]))
             if compare_mode == "expected":
-                original_result = None
                 matched = (
-                    refactored_result["returncode"] == 0
+                    refactored_result is not None
+                    and refactored_result["returncode"] == 0
                     and not refactored_result["timed_out"]
                     and refactored_result["stderr"] == ""
                     and normalize_output(refactored_result["stdout"], normalize)
                     == normalize_output(test["expected"], normalize)
                 )
             elif compare_mode == "original":
-                original_result = orig_runs[position][1]
                 matched = (
-                    original_result["returncode"] == refactored_result["returncode"] == 0
+                    refactored_result is not None
+                    and original_result["returncode"] == refactored_result["returncode"] == 0
                     and not original_result["timed_out"]
                     and not refactored_result["timed_out"]
                     and normalize_output(original_result["stdout"], normalize)
@@ -276,7 +335,6 @@ def test_refactored_cluster(
             totals["tests"] += 1
             totals["matched_original"] += int(matched)
             file_ok = file_ok and matched
-        totals["files"] += 1
         totals["files_matched_original"] += int(file_ok)
         file_results.append({"file_id": file_id, "status": "ok" if file_ok else "failed", "tests": tests})
 
@@ -284,6 +342,10 @@ def test_refactored_cluster(
         "cluster_id": cluster_id,
         "scope": "refactored",
         "result_dir": str(result_dir),
+        "test_policy": {
+            "baseline_filter": "original_passed_only",
+            "description": "Only tests passed by the original solution are evaluated for the refactored solution.",
+        },
         "summary": {
             **totals,
             "test_pass_rate": totals["matched_original"] / totals["tests"] if totals["tests"] else None,
