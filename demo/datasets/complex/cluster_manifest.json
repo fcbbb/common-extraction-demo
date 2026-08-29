@@ -1,5 +1,5 @@
 {
-  "source_dir": "demo/dataset_complex/source",
+  "source_dir": "demo/datasets/complex/source",
   "repo": "scrapy",
   "repo_url": "https://github.com/scrapy/scrapy",
   "slice_commit": "3c6a62db47536df89676ab9d7347acf5c5c8a2e4",
@@ -174,7 +174,7 @@
           ]
         }
       ],
-      "test_dir": "demo/dataset_complex/tests",
+      "test_dir": "demo/datasets/complex/tests",
       "shared_test_files": [
         "test_downloadermiddleware.py",
         "test_spidermiddleware.py",

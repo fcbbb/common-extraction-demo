@@ -20,8 +20,9 @@ PROJECT_DIR="/home/xiaoheng/demo_common_extraction"
 DATASET="${DATASET:-codecontest}"         # codecontest (default) or complex (Scrapy slice)
 BASELINE="${BASELINE:-both}"              # a, b, or both
 CLUSTER_ID="${CLUSTER_ID:-all}"           # 0..9, or all
-API_TIMEOUT_SEC="${API_TIMEOUT_SEC:-300}"
-MAX_OUTPUT_TOKENS="${MAX_OUTPUT_TOKENS:-128000}"
+RESULTS_SUFFIX="${RESULTS_SUFFIX:-}"       # optional result directory suffix, e.g. _diff
+API_TIMEOUT_SEC="${API_TIMEOUT_SEC:-}"         # empty = no API timeout
+MAX_OUTPUT_TOKENS="${MAX_OUTPUT_TOKENS:-}"     # empty = no output token limit
 RESUME="${RESUME:-0}"                     # 1 skips ok clusters/subclusters
 
 case "$DATASET" in
@@ -29,14 +30,14 @@ case "$DATASET" in
     PREPARE_MODULE=demo.prepare.prepare_dataset
     MANIFEST="$PROJECT_DIR/demo/datasets/codecontest/cluster_manifest.json"
     DATASET_DIR="$PROJECT_DIR/demo/datasets/codecontest"
-    RESULTS_DIR="$PROJECT_DIR/demo/results/codecontest"
+    RESULTS_DIR="$PROJECT_DIR/demo/results/codecontest${RESULTS_SUFFIX}"
     TEST_MODE=stdio
     ;;
   complex)
     PREPARE_MODULE=demo.prepare.prepare_dataset_complex
     MANIFEST="$PROJECT_DIR/demo/datasets/complex/cluster_manifest.json"
     DATASET_DIR="$PROJECT_DIR/demo/datasets/complex"
-    RESULTS_DIR="$PROJECT_DIR/demo/results/complex"
+    RESULTS_DIR="$PROJECT_DIR/demo/results/complex${RESULTS_SUFFIX}"
     TEST_MODE=pytest
     ;;
   *)
@@ -123,9 +124,11 @@ fi
 
 run_cmd python3 -u -m "$PREPARE_MODULE"
 if [[ -n "${DEEPSEEK_API_KEY:-}" ]]; then
-  run_cmd python3 -u -m demo.baselines.check_api \
-    --api-timeout-sec "$API_TIMEOUT_SEC" \
-    --max-output-tokens 32
+  api_check_args=(--max-output-tokens 32)
+  if [[ -n "$API_TIMEOUT_SEC" ]]; then
+    api_check_args+=(--api-timeout-sec "$API_TIMEOUT_SEC")
+  fi
+  run_cmd python3 -u -m demo.baselines.check_api "${api_check_args[@]}"
 else
   log "Skipping DeepSeek API check because DEEPSEEK_API_KEY is not set."
 fi
@@ -139,11 +142,15 @@ common_args=(
   --manifest "$MANIFEST"
   --dataset-dir "$DATASET_DIR"
   --results-dir "$RESULTS_DIR"
-  --api-timeout-sec "$API_TIMEOUT_SEC"
-  --max-output-tokens "$MAX_OUTPUT_TOKENS"
   --test-mode "$TEST_MODE"
   --skip-metrics
 )
+if [[ -n "$API_TIMEOUT_SEC" ]]; then
+  common_args+=(--api-timeout-sec "$API_TIMEOUT_SEC")
+fi
+if [[ -n "$MAX_OUTPUT_TOKENS" ]]; then
+  common_args+=(--max-output-tokens "$MAX_OUTPUT_TOKENS")
+fi
 if [[ "$RESUME" == "1" ]]; then
   common_args+=(--resume)
 fi

@@ -106,7 +106,7 @@ What stays algorithm-specific:
 
 - Manifest: `cluster_manifest.json` — one cluster `0`, 24 member files, 4182 source lines.
 - Originals: `clusters/0/original/file_*.py` (byte-identical copies of `source/`).
-- Test dir: `demo/dataset_complex/tests` — includes upstream test infra (`tests/utils`, `tests/mockserver`, `tests/spiders.py`, `tests/sample_data`, `tests/keys`) fetched at commit 3c6a62db47536df89676ab9d7347acf5c5c8a2e4.
+- Test dir: `demo/datasets/complex/tests` — includes upstream test infra (`tests/utils`, `tests/mockserver`, `tests/spiders.py`, `tests/sample_data`, `tests/keys`) fetched at commit 3c6a62db47536df89676ab9d7347acf5c5c8a2e4.
 - Shared test files (cluster level): `test_downloadermiddleware.py`, `test_spidermiddleware.py`, `test_spidermiddleware_output_chain.py`, `test_pipelines.py`.
 
 | file_id | source | rel_path | pytest files |
