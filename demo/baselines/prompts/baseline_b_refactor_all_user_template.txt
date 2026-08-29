@@ -1,31 +1,23 @@
-Refactor every member script listed in the input using the supplied common.py.
+Refactor every member script listed in the input using the fixed common.py.
 
 Input JSON:
 {payload}
 
-Return this JSON schema:
+Return this JSON schema. Do not return complete rewritten member files, line numbers, or diffs:
 {
   "refactors": [
     {
       "file_id": "file_000.py",
-      "diff": "",
-      "edit_mapping": [
+      "edits": [
         {
-          "edit_id": "edit_1",
-          "helper": "helper_name",
-          "removed_hunks": [1],
-          "added_hunks": [1],
-          "relationship": "what deleted implementation is replaced by the common.py call"
-        }
-      ],
-      "call_mapping": [
-        {
-          "helper": "helper_name",
-          "original_role": "what original logic this replaces",
-          "call_sites": ["brief location or statement"]
+          "original": "exact source fragment to replace",
+          "replacement": "exact replacement fragment",
+          "rationale": "what this local change does"
         }
       ],
       "rationale": "..."
     }
   ]
 }
+
+Return exactly one refactors entry per input file. Use an empty edits array for an unchanged member. The host applies each ordered original/replacement pair to the original source, preserves all untouched text, generates the audit diff, and performs the final checks.

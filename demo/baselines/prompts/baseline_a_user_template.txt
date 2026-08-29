@@ -3,7 +3,7 @@ Refactor this cluster.
 Input JSON:
 {payload}
 
-Return this JSON schema. Do not return complete rewritten member files. Each member must contain only a strict unified diff and the mapping between deleted implementation hunks and inserted common.py call hunks. Number each file's `@@ ... @@` hunks from top to bottom starting at 1; these are the hunk IDs used below, not source line numbers:
+Return this JSON schema. Do not return complete rewritten member files, line numbers, or diffs. For every member, return only an ordered list of exact local edit intents:
 {
   "library": {
     "path": "common.py",
@@ -11,18 +11,16 @@ Return this JSON schema. Do not return complete rewritten member files. Each mem
   },
   "members": {
     "file_000.py": {
-      "diff": "",
-      "edit_mapping": [
+      "edits": [
         {
-          "edit_id": "edit_1",
-          "helper": "helper_name",
-          "removed_hunks": [1],
-          "added_hunks": [2],
-          "relationship": "what deleted implementation is replaced by the common.py call"
+          "original": "exact source fragment to replace",
+          "replacement": "exact replacement fragment",
+          "rationale": "what this local change does"
         }
-      ],
-      "call_mapping": []
+      ]
     }
   },
   "rationale": "..."
 }
+
+The host program applies each original/replacement pair to the original source, preserving all text that is not covered by an edit. Use an empty edits array for an unchanged member. The host generates the final member files and audit diffs.

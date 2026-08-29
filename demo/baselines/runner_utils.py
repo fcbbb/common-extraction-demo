@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import difflib
+import io
 import json
 import py_compile
 import re
@@ -8,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tokenize
 from pathlib import Path
 from typing import Any
 
@@ -101,6 +104,7 @@ def call_and_parse_extraction(
     cluster_id: str,
     prompt_paths: dict[str, str],
     repair_context: str | None = None,
+    raw_prefix: str = "",
 ) -> dict[str, Any]:
     prompt = user_prompt if repair_context is None else user_prompt + "\n\nRepair context:\n" + repair_context
     prompt_chars = len(system_prompt) + len(prompt)
@@ -116,8 +120,8 @@ def call_and_parse_extraction(
             final_user_prompt = (
                 prompt
                 + "\n\nYour previous response could not be parsed or did not match the required schema. "
-                + "Return one complete valid JSON object only, with library.content, members.*.diff, "
-                + "and members.*.edit_mapping. Do not return members.*.new_content."
+                + "Return one complete valid JSON object only, with library.content, members.*.edits, "
+                + "and each edit's original and replacement fragments. Do not return complete member files or a diff."
                 + f"\nParser error: {errors[-1]}"
             )
         status(f"{baseline} cluster {cluster_id}: calling DeepSeek API attempt {attempt + 1}/2")
@@ -125,16 +129,196 @@ def call_and_parse_extraction(
         status(f"{baseline} cluster {cluster_id}: API response received")
         out_dir.mkdir(parents=True, exist_ok=True)
         suffix = "" if attempt == 0 else f".retry{attempt}"
-        (out_dir / f"raw_response{suffix}.txt").write_text(response.content, encoding="utf-8")
-        write_json(out_dir / f"raw_api_response{suffix}.json", response.raw)
-        save_call_log(out_dir / f"call_log_meta{suffix}.json", response, baseline, cluster_id, prompt_paths)
+        (out_dir / f"{raw_prefix}raw_response{suffix}.txt").write_text(response.content, encoding="utf-8")
+        write_json(out_dir / f"{raw_prefix}raw_api_response{suffix}.json", response.raw)
+        save_call_log(out_dir / f"{raw_prefix}call_log_meta{suffix}.json", response, baseline, cluster_id, prompt_paths)
         try:
             payload = extract_json_object(response.content)
             require_extraction_schema(payload)
             return payload
         except Exception as exc:
             errors.append(repr(exc))
+            if attempt == 0:
+                status(
+                    f"{baseline} cluster {cluster_id}: schema/JSON validation failed; "
+                    f"retrying API call: {exc}"
+                )
     raise ValueError("Extraction JSON parse/schema failed after one retry: " + " | ".join(errors))
+
+
+def _source_offsets(source: str) -> list[int]:
+    offsets = [0]
+    for line in source.splitlines(keepends=True):
+        offsets.append(offsets[-1] + len(line))
+    return offsets
+
+
+def _code_occurrences(source: str, fragment: str) -> tuple[list[int], int]:
+    """Find exact matches that are not wholly inside a string or comment token."""
+    offsets = _source_offsets(source)
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+        ignored_spans = []
+        for token in tokens:
+            if token.type not in {tokenize.STRING, tokenize.COMMENT}:
+                continue
+            start = offsets[token.start[0] - 1] + token.start[1]
+            end = offsets[token.end[0] - 1] + token.end[1]
+            ignored_spans.append((start, end))
+    except (IndentationError, tokenize.TokenError) as exc:
+        raise ValueError(f"Original source could not be tokenized: {exc}") from exc
+
+    positions = []
+    search_from = 0
+    while True:
+        position = source.find(fragment, search_from)
+        if position < 0:
+            break
+        end = position + len(fragment)
+        if not any(position >= start and end <= stop for start, stop in ignored_spans):
+            positions.append(position)
+        search_from = end
+    return positions, source.count(fragment)
+
+
+def _apply_edit_intents(source: str, edits: list[dict[str, Any]], file_id: str) -> str:
+    """Apply exact local replacements while retaining every untouched source character."""
+    result = source
+    for index, edit in enumerate(edits, 1):
+        original = edit["original"]
+        replacement = edit["replacement"]
+        if original == replacement:
+            raise ValueError(f"{file_id} edit {index} is a no-op")
+        code_positions, total_occurrences = _code_occurrences(result, original)
+        if len(code_positions) != 1:
+            raise ValueError(
+                f"{file_id} edit {index} original fragment has {total_occurrences} total occurrences "
+                f"but {len(code_positions)} code occurrences; expected exactly one code occurrence"
+            )
+        position = code_positions[0]
+        result = result[:position] + replacement + result[position + len(original):]
+    return result
+
+
+def _generate_unified_diff(original: str, final: str, file_id: str) -> str:
+    if original == final:
+        return ""
+    lines = difflib.unified_diff(
+        original.splitlines(keepends=True),
+        final.splitlines(keepends=True),
+        fromfile=f"a/{file_id}",
+        tofile=f"b/{file_id}",
+        lineterm="",
+    )
+    return "".join(line if line.endswith("\n") else line + "\n" for line in lines)
+
+
+def materialize_edit_intents(
+    payload: dict[str, Any],
+    original_files: dict[str, str],
+) -> dict[str, Any]:
+    """Materialize model edit intents and generate an audit diff on the host."""
+    members = payload["members"]
+    if set(members) != set(original_files):
+        raise ValueError(
+            f"Member file_ids mismatch: expected {sorted(original_files)}, got {sorted(members)}"
+        )
+
+    materialized_members: dict[str, Any] = {}
+    for file_id, source in original_files.items():
+        member = members[file_id]
+        final = _apply_edit_intents(source, member["edits"], file_id)
+        materialized_member = dict(member)
+        materialized_member["new_content"] = final
+        materialized_member["diff"] = _generate_unified_diff(source, final, file_id)
+        materialized_members[file_id] = materialized_member
+
+    materialized = dict(payload)
+    materialized["members"] = materialized_members
+    return materialized
+
+
+def _common_usage(content: str, api_names: set[str]) -> set[str]:
+    """Return common.py APIs referenced by a member, using only its AST."""
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return set()
+
+    module_aliases: set[str] = set()
+    imported_api_names: dict[str, str] = {}
+    wildcard_import = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for item in node.names:
+                if item.name == "common":
+                    module_aliases.add(item.asname or "common")
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module == "common":
+            for item in node.names:
+                if item.name == "*":
+                    wildcard_import = True
+                elif item.name in api_names:
+                    imported_api_names[item.asname or item.name] = item.name
+
+    used: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            api = imported_api_names.get(node.id)
+            if api is not None:
+                used.add(api)
+            elif wildcard_import and node.id in api_names:
+                used.add(node.id)
+        elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            if node.value.id in module_aliases and node.attr in api_names:
+                used.add(node.attr)
+    return used
+
+
+def _common_export_names(tree: ast.Module) -> set[str]:
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names.update(target.id for target in targets if isinstance(target, ast.Name))
+    return names
+
+
+def validate_common_usage(
+    payload: dict[str, Any],
+    original_files: dict[str, str],
+) -> dict[str, Any]:
+    """Validate, via AST, that every actually changed member uses common.py."""
+    try:
+        common_tree = ast.parse(payload["library"]["content"])
+    except SyntaxError as exc:
+        raise ValueError(f"common.py is not valid Python: {exc}") from exc
+    api_names = _common_export_names(common_tree)
+
+    files = {}
+    for file_id, original in original_files.items():
+        member = payload["members"][file_id]
+        final = member["new_content"]
+        changed = final != original
+        used_apis = sorted(_common_usage(final, api_names))
+        if changed and not used_apis:
+            raise ValueError(f"{file_id} was modified but has no AST reference to a common.py API")
+        files[file_id] = {
+            "changed": changed,
+            "common_apis_used": used_apis,
+            "ok": not changed or bool(used_apis),
+        }
+    result = {"ok": True, "common_api_count": len(api_names), "files": files}
+    payload["common_usage"] = result
+    return result
+
+
+def behavior_tests_ok(metrics: dict[str, Any] | None) -> bool:
+    if metrics is None:
+        return True
+    summary = metrics.get("tests") or {}
+    return not summary.get("tests") or summary.get("file_pass_rate") == 1.0
 
 
 _DIFF_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
@@ -289,16 +473,27 @@ def write_extraction_result(out_dir: Path, payload: dict[str, Any]) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "common.py").write_text(payload["library"]["content"], encoding="utf-8")
     refactored_dir = out_dir / "refactored"
+    diff_dir = out_dir / "diffs"
     shutil.rmtree(refactored_dir, ignore_errors=True)
+    shutil.rmtree(diff_dir, ignore_errors=True)
     refactored_dir.mkdir(parents=True, exist_ok=True)
+    diff_dir.mkdir(parents=True, exist_ok=True)
     for file_id, member in payload["members"].items():
         (refactored_dir / file_id).write_text(member["new_content"], encoding="utf-8")
+        (diff_dir / f"{file_id}.diff").write_text(member.get("diff", ""), encoding="utf-8")
     write_json(out_dir / "raw_output.json", payload)
     write_json(
         out_dir / "call_log.json",
         {
+            "mapping_source": (
+                "model_hunk_mapping"
+                if any(member.get("edit_mapping") or member.get("call_mapping") for member in payload["members"].values())
+                else "model_edit_intents"
+            ),
             "members": {
                 file_id: {
+                    "edits": member.get("edits", []),
+                    "diff": member.get("diff", ""),
                     "edit_mapping": member.get("edit_mapping", []),
                     "call_mapping": member.get("call_mapping", []),
                     "removed_duplicates": member.get("removed_duplicates", []),

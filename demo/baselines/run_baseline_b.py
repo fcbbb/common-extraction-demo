@@ -15,11 +15,12 @@ from demo.baselines.json_utils import (
 from demo.baselines.llm_client import DeepSeekClient, LLMConfigurationError
 from demo.baselines.runner_utils import (
     PROMPT_DIR,
+    behavior_tests_ok,
     build_user_prompt,
     compile_result,
     load_json_if_exists,
     load_manifest,
-    materialize_surgical_extraction,
+    materialize_edit_intents,
     prompt_files_for_cluster,
     read_text,
     run_metrics,
@@ -27,6 +28,7 @@ from demo.baselines.runner_utils import (
     selected_clusters,
     status,
     status_payload,
+    validate_common_usage,
     write_extraction_result,
     write_json,
 )
@@ -200,23 +202,22 @@ def call_member_refactors(
         cluster_id,
         {"system": str(system_path), "user_template": str(user_path)},
         f"{raw_prefix}refactor_all",
-        '{"refactors":[{"file_id":"file_000.py","diff":"","edit_mapping":[],"call_mapping":[],"rationale":"..."}]}',
+        '{"refactors":[{"file_id":"file_000.py","edits":[],"rationale":"..."}]}',
         lambda item: require_refactor_batch_schema(item, set(subcluster["members"])),
         repair_context=repair_context,
     )
 
 
-def generate_split_extraction(
+def generate_member_refactor_extraction(
     client: DeepSeekClient,
     cluster: dict[str, Any],
     dataset_dir: Path,
     out_dir: Path,
     subcluster: dict[str, Any],
+    library: dict[str, Any],
     raw_prefix: str = "",
     repair_context: str | None = None,
 ) -> dict[str, Any]:
-    common_payload = call_common(client, cluster, dataset_dir, out_dir, subcluster, raw_prefix, repair_context)
-    library = common_payload["library"]
     refactor_payload = call_member_refactors(
         client,
         cluster,
@@ -227,24 +228,23 @@ def generate_split_extraction(
         raw_prefix,
         repair_context,
     )
-    members = {}
-    for item in refactor_payload["refactors"]:
-        file_id = item["file_id"]
-        members[file_id] = {
-            "diff": item["diff"],
-            "edit_mapping": item["edit_mapping"],
-            "call_mapping": item.get("call_mapping", []),
+    members = {
+        item["file_id"]: {
+            "edits": item["edits"],
             "rationale": item.get("rationale", ""),
         }
+        for item in refactor_payload["refactors"]
+    }
     original_files = {
         item["file_id"]: item["source_code"]
         for item in prompt_files_for_cluster(dataset_dir, cluster, subcluster["members"])
     }
-    return materialize_surgical_extraction({
-        "library": library,
-        "members": members,
-        "rationale": common_payload.get("rationale", ""),
-    }, original_files)
+    extraction = materialize_edit_intents(
+        {"library": library, "members": members, "rationale": ""},
+        original_files,
+    )
+    validate_common_usage(extraction, original_files)
+    return extraction
 
 
 def run_subcluster(
@@ -310,30 +310,62 @@ def run_subcluster(
     if client is None:
         raise LLMConfigurationError("DEEPSEEK_API_KEY is required for subclusters without reusable ok artifacts.")
 
+    # Generate common.py exactly once. All member-refactor retries below reuse this
+    # library and call only the member-refactor stage.
+    common_path = out_dir / "common.py"
+    if resume and common_path.exists():
+        common_payload = {
+            "library": {"path": "common.py", "content": common_path.read_text(encoding="utf-8")},
+            "rationale": "reused fixed common.py from the previous member-refactor attempt",
+        }
+    else:
+        common_payload = call_common(client, cluster, dataset_dir, out_dir, subcluster)
+    library = common_payload["library"]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "common.py").write_text(library["content"], encoding="utf-8")
     try:
-        extraction = generate_split_extraction(client, cluster, dataset_dir, out_dir, subcluster)
+        extraction = generate_member_refactor_extraction(
+            client, cluster, dataset_dir, out_dir, subcluster, library
+        )
     except ValueError as exc:
         repair = (
-            "Previous response failed strict surgical-diff validation. Return the same common.py plus exactly one "
-            "member entry per file, with a strict unified diff and edit_mapping. The host applies the diff to the "
-            "original source; do not return new_content. Every deletion hunk must be paired with an added hunk "
-            "that calls a helper defined in common.py. Validation error: "
+            "The fixed common.py has been generated. Your member edit intents could not be applied or did not pass "
+            "host validation. Return exactly one member entry per file with ordered exact original/replacement "
+            "fragments. Do not regenerate or modify common.py; do not return line numbers, diffs, or complete files. "
+            "Validation error: "
             + repr(exc)
         )
-        extraction = generate_split_extraction(
-            client, cluster, dataset_dir, out_dir, subcluster, raw_prefix="surgical_retry_", repair_context=repair
+        extraction = generate_member_refactor_extraction(
+            client,
+            cluster,
+            dataset_dir,
+            out_dir,
+            subcluster,
+            library,
+            raw_prefix="refactor_retry_",
+            repair_context=repair,
         )
+    extraction["rationale"] = common_payload.get("rationale", "")
     write_extraction_result(out_dir, extraction)
     compile_info = compile_result(out_dir)
     if not compile_info["ok"]:
         repair = (
-            "Previous split extraction failed py_compile. Return common.py and strict member diffs as valid JSON. "
-            "Do not return new_content; the host applies each diff to the original source. "
+            "The fixed common.py must remain unchanged. The host-generated member files failed parsing or compilation. "
+            "Return corrected member edit intents only; do not regenerate common.py, return line numbers, diffs, or "
+            "complete files. "
             + json.dumps(compile_info, ensure_ascii=False)
         )
-        extraction = generate_split_extraction(
-            client, cluster, dataset_dir, out_dir, subcluster, raw_prefix="compile_retry_", repair_context=repair
+        extraction = generate_member_refactor_extraction(
+            client,
+            cluster,
+            dataset_dir,
+            out_dir,
+            subcluster,
+            library,
+            raw_prefix="compile_retry_",
+            repair_context=repair,
         )
+        extraction["rationale"] = common_payload.get("rationale", "")
         write_extraction_result(out_dir, extraction)
         compile_info = compile_result(out_dir)
     metrics = (
@@ -351,13 +383,51 @@ def run_subcluster(
         if compile_info["ok"] and not skip_metrics
         else None
     )
+    if metrics is not None and not behavior_tests_ok(metrics):
+        repair = (
+            "The fixed common.py must remain unchanged. Host behavior tests did not all pass for the generated member "
+            "files. Return corrected member edit intents only; do not regenerate common.py, return line numbers, diffs, "
+            "or complete files. Test result: "
+            + json.dumps(metrics["tests"], ensure_ascii=False)
+        )
+        extraction = generate_member_refactor_extraction(
+            client,
+            cluster,
+            dataset_dir,
+            out_dir,
+            subcluster,
+            library,
+            raw_prefix="test_retry_",
+            repair_context=repair,
+        )
+        extraction["rationale"] = common_payload.get("rationale", "")
+        write_extraction_result(out_dir, extraction)
+        compile_info = compile_result(out_dir)
+        metrics = (
+            run_metrics(
+                cluster,
+                dataset_dir,
+                out_dir,
+                timeout_sec,
+                file_ids=subcluster["members"],
+                test_limit=test_limit,
+                compare_mode=compare_mode,
+                normalize=normalize,
+                test_mode=test_mode,
+            )
+            if compile_info["ok"]
+            else None
+        )
+    tests_ok = behavior_tests_ok(metrics)
     return {
         "baseline": "baseline_b",
         "cluster_id": cluster_id,
         "subcluster_id": sub_id,
         "members": subcluster["members"],
-        "status": "ok" if compile_info["ok"] else "compile_failed",
+        "status": "compile_failed" if not compile_info["ok"] else "tests_failed" if not tests_ok else "ok",
         "compile": compile_info,
+        "common_usage": extraction.get("common_usage"),
+        "tests_verified": metrics is not None,
         "metrics": metrics,
     }
 
@@ -381,7 +451,23 @@ def run_cluster(
     try:
         previous_cluster = load_json_if_exists(cluster_out_dir / "status.json")
         previous_discovery = load_json_if_exists(cluster_out_dir / "discovery.json")
-        if resume and previous_cluster and previous_cluster.get("status") == "ok" and previous_discovery:
+        if (
+            resume
+            and previous_cluster
+            and previous_cluster.get("status") == "ok"
+            and previous_discovery
+            and (not rerun_metrics or skip_metrics)
+        ):
+            print(
+                f"baseline_b cluster {cluster_id}: resume hit, skipping cluster",
+                file=sys.stderr,
+                flush=True,
+            )
+            return previous_cluster
+        # Discovery is an independent completed artifact.  Reuse it even when
+        # the previous run stopped partway through subclusters and therefore
+        # never wrote an overall status=ok for the cluster.
+        if resume and previous_discovery:
             print(f"baseline_b cluster {cluster_id}: resume hit, reusing discovery", file=sys.stderr, flush=True)
             discovery = previous_discovery
         else:
@@ -426,10 +512,11 @@ def run_cluster(
             sub_results.append(sub_result)
             progress(f"baseline_b cluster {cluster_id} subclusters", sub_index, total_subclusters)
         covered = set().union(*(set(item["members"]) for item in valid)) if valid else set()
+        cluster_status = "ok" if all(item.get("status") == "ok" for item in sub_results) else "failed"
         result = {
             "baseline": "baseline_b",
             "cluster_id": cluster_id,
-            "status": "ok",
+            "status": cluster_status,
             "discovered_subclusters": len(subclusters),
             "valid_subclusters": len(valid),
             "noise_files": sorted((set(discovery.get("noise") or []) | (cluster_files - covered)) & cluster_files),
@@ -470,7 +557,7 @@ def main() -> None:
         cluster_out_dir = args.results_dir / "baseline_b" / cluster_id
         cluster_status = load_json_if_exists(cluster_out_dir / "status.json") or {}
         discovery = load_json_if_exists(cluster_out_dir / "discovery.json")
-        if cluster_status.get("status") != "ok" or not discovery:
+        if not discovery:
             return True
         cluster_files = {item["file_id"] for item in cluster["files"]}
         subclusters = [

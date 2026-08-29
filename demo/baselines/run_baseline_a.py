@@ -8,16 +8,18 @@ from demo.baselines.llm_client import DeepSeekClient, LLMConfigurationError
 from demo.baselines.runner_utils import (
     PROMPT_DIR,
     build_user_prompt,
+    behavior_tests_ok,
     call_and_parse_extraction,
     compile_result,
     load_json_if_exists,
     load_manifest,
-    materialize_surgical_extraction,
+    materialize_edit_intents,
     prompt_files_for_cluster,
     read_text,
     run_metrics,
     selected_clusters,
     status_payload,
+    validate_common_usage,
     write_extraction_result,
     write_json,
 )
@@ -98,21 +100,49 @@ def run_cluster(
     try:
         extraction = call_and_parse_extraction(client, system_prompt, user_prompt, out_dir, "baseline_a", cluster_id, prompt_paths)
         try:
-            extraction = materialize_surgical_extraction(extraction, original_files)
+            extraction = materialize_edit_intents(extraction, original_files)
+            common_usage = validate_common_usage(extraction, original_files)
         except ValueError as exc:
-            repair = "Previous response contained an invalid surgical diff. Return a complete corrected JSON object.\n" + str(exc)
-            extraction = call_and_parse_extraction(
-                client, system_prompt, user_prompt, out_dir, "baseline_a", cluster_id, prompt_paths, repair_context=repair
+            status(f"baseline_a cluster {cluster_id}: host edit/AST validation failed; retrying: {exc}")
+            repair = (
+                "Previous response contained edit intents that the host could not apply or validate. "
+                "Return corrected local original/replacement fragments; do not return line numbers, diffs, "
+                "or complete member files.\n" + str(exc)
             )
-            extraction = materialize_surgical_extraction(extraction, original_files)
+            extraction = call_and_parse_extraction(
+                client,
+                system_prompt,
+                user_prompt,
+                out_dir,
+                "baseline_a",
+                cluster_id,
+                prompt_paths,
+                repair_context=repair,
+                raw_prefix="repair_",
+            )
+            extraction = materialize_edit_intents(extraction, original_files)
+            common_usage = validate_common_usage(extraction, original_files)
         write_extraction_result(out_dir, extraction)
         compile_info = compile_result(out_dir)
         if not compile_info["ok"]:
-            repair = "Previous output failed py_compile. Return a complete corrected JSON object.\n" + str(compile_info)
-            extraction = call_and_parse_extraction(
-                client, system_prompt, user_prompt, out_dir, "baseline_a", cluster_id, prompt_paths, repair_context=repair
+            status(f"baseline_a cluster {cluster_id}: host compilation failed; retrying: {compile_info}")
+            repair = (
+                "The host-generated member files failed parsing or compilation. Return corrected local edit intents; "
+                "do not return line numbers, diffs, or complete member files.\n" + str(compile_info)
             )
-            extraction = materialize_surgical_extraction(extraction, original_files)
+            extraction = call_and_parse_extraction(
+                client,
+                system_prompt,
+                user_prompt,
+                out_dir,
+                "baseline_a",
+                cluster_id,
+                prompt_paths,
+                repair_context=repair,
+                raw_prefix="compile_retry_",
+            )
+            extraction = materialize_edit_intents(extraction, original_files)
+            common_usage = validate_common_usage(extraction, original_files)
             write_extraction_result(out_dir, extraction)
             compile_info = compile_result(out_dir)
         metrics = (
@@ -129,8 +159,21 @@ def run_cluster(
             if compile_info["ok"] and not skip_metrics
             else None
         )
-        status = "ok" if compile_info["ok"] else "compile_failed"
-        result = {"baseline": "baseline_a", "cluster_id": cluster_id, "status": status, "compile": compile_info, "metrics": metrics}
+        tests_ok = behavior_tests_ok(metrics)
+        status = (
+            "compile_failed" if not compile_info["ok"]
+            else "tests_failed" if not tests_ok
+            else "ok"
+        )
+        result = {
+            "baseline": "baseline_a",
+            "cluster_id": cluster_id,
+            "status": status,
+            "compile": compile_info,
+            "common_usage": common_usage,
+            "tests_verified": metrics is not None,
+            "metrics": metrics,
+        }
     except Exception as exc:
         result = {"baseline": "baseline_a", "cluster_id": cluster_id, **status_payload("failed", repr(exc))}
     write_json(out_dir / "status.json", result)

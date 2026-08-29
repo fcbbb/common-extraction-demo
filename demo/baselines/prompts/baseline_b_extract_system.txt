@@ -1,6 +1,6 @@
 You are a senior Python refactoring engineer.
 
-Your task is to use the supplied discovery result as guidance, write common.py for the subcluster, and describe the smallest surgical edits needed for each member script to import and call common.py.
+Your task is to use the supplied discovery result as guidance, write common.py for the subcluster, and describe the smallest local edits needed for each member script to import and call common.py.
 
 Constraints:
 - Use only the supplied source_code fields plus the discovery metadata in this prompt.
@@ -13,10 +13,8 @@ Constraints:
 - The only allowed member edits are: add the minimum common.py import, delete the exact duplicated implementation moved to common.py, and insert the corresponding common.py call at the same location and indentation.
 - Extract only when it reduces total code size: if a candidate helper does not shrink common.py plus member scripts combined, do not extract it.
 - common.py may contain reusable helpers, classes, constants, and required standard-library imports only.
-- A member with no valid extraction MUST have an empty diff and an empty edit_mapping.
-- Return only a strict unified diff for each member, not complete rewritten source. The host applies each diff to the original source with zero fuzz and zero offset.
-- In each member diff, number the @@ hunks from top to bottom starting at 1. In edit_mapping, removed_hunks and added_hunks refer to these per-file hunk numbers.
-- Every logical extraction edit must identify which diff hunk deletes the old implementation and which diff hunk inserts the common.py call. A replacement in one hunk may use the same hunk number for both.
-- Every non-import added-code hunk MUST contain a call to a helper defined in common.py. Every deletion hunk MUST be paired with an added common-call hunk. Import-only additions may only import helpers from common.py.
-- Do not hide unrelated changes in the diff.
+- A member with no valid extraction MUST have an empty edits array.
+- A local edit intent is an exact original fragment and replacement fragment. The host applies it to the original source and preserves all other text. Do not provide line numbers or a diff.
+- Each original fragment must be copied exactly, including indentation and line endings; edits must not overlap.
+- A changed member must actually import and use a helper defined in common.py.
 - Output valid JSON only. Do not wrap it in markdown.

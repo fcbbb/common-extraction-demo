@@ -16,14 +16,14 @@
 
 1. **Baseline-a：端到端一次性抽取**
    - 对每个作者给定 cluster，单次把该 cluster 的所有 `solution` 源码喂给 LLM。
-   - 让 LLM 一次性完成“发现共性、生成 `common.py`、改写成员文件”。
+   - 让 LLM 一次性完成“发现共性、生成 `common.py`、提出成员文件的局部修改意图”。
 
 2. **Baseline-b：先发现，再生成公共库，最后应用成员改写**
    - Step 1：只看同一个 cluster 内所有 `solution`，让 LLM 自己发现哪些文件共享组件。
    - Step 2：对 Step 1 发现出的每个有效子簇，让 LLM 只生成 `common.py`。
-   - Step 3：将 `common.py` 和成员源码交给独立的改写步骤，只生成成员文件的严格 diff；宿主程序应用 diff 后写出最终文件。
+   - Step 3：将 `common.py` 和成员源码交给独立的改写步骤，只生成成员文件的局部修改意图；宿主程序应用意图后写出最终文件。
 
-这里的“抽取”在语义上包含两件事：判断哪些逻辑值得共享，以及把这部分逻辑实现为 `common.py` 的 helper。为了让每次 LLM 调用只承担一个明确任务，Baseline-b 在工程实现上把“生成公共库”和“修改成员源码”分开。成员源码的具体删除位置、调用位置和 hunk 对应关系由 Step 3 输出并由宿主程序校验。
+这里的“抽取”在语义上包含两件事：判断哪些逻辑值得共享，以及把这部分逻辑实现为 `common.py` 的 helper。为了让每次 LLM 调用只承担一个明确任务，Baseline-b 在工程实现上把“生成公共库”和“修改成员源码”分开。成员源码的具体修改意图由 Step 3 输出；宿主程序负责应用和验证，模型不输出行号或 diff。
 
 两者都使用同一个 DeepSeek V4 Flash API 配置，温度固定为 0，不做多样本采样，不做 rerank。
 
@@ -158,7 +158,7 @@ demo/
 | 2 | **MDL 压缩率** | 主指标 | 原始源码包 vs 抽库改写后源码包的 NLL |
 | 3 | **tokens 压缩率** | 辅指标 | 原始源码包 token 数 vs `common.py + refactored` token 数 |
 | 4 | **API coverage** | 结构约束 | `common.py` 暴露 API 被改写文件实际使用的覆盖情况 |
-| 5 | **改写冲突率** | 软指标 | LLM 输出的 `call_mapping` 与 AST/diff 实际调用之间的不一致 |
+| 5 | **改写冲突率** | 软指标 | 当前两种 baseline 都使用局部修改意图，不要求模型声明 helper mapping，因此标记为 `not_available` |
 
 ### 3.1 Pass Rate
 
@@ -241,12 +241,12 @@ file_api_coverage = 至少调用一个 common API 的改写文件数 / 成功改
 
 ### 3.5 改写冲突率
 
-Baseline 输出要求包含 `edit_mapping`（兼容旧结果中的 `call_mapping`）。评估器按“文件—helper”提取声明的 helper，并与改写文件 AST 中实际调用的 `common.py` 顶层 API 比较：
+当前两种 baseline 都不要求模型输出 helper mapping，只输出原片段与新片段，因此该指标标记为 `not_available`。两者的 common.py 使用要求都由宿主 AST 校验直接判定。
 
 - mapping 声称用了某 helper，但 AST 中没有实际调用。
 - AST 中实际调用了某 helper，但 mapping 没记录。
 - mapping 指向的 helper 不存在于 `common.py`。
-- 严格 diff 是否能应用、删除 hunk 与新增 common 调用是否对应，由抽取阶段的宿主校验器提前检查，不计入这里的冲突率。
+- Baseline-a 的局部修改是否能应用、最终文件是否可编译、是否使用 common.py，以及行为是否保持，由宿主统一检查，不计入冲突率。
 
 计算：
 
@@ -266,7 +266,9 @@ conflict_rate = conflict_items / max(mapping_items, actual_helper_calls, 1)
 
 1. 发现共享算法组件。
 2. 写出 `common.py`。
-3. 改写所有成员文件去 import 并调用 `common.py`。
+3. 为每个成员文件提出若干组“原片段 → 新片段”的局部修改意图。
+
+模型不返回行号、不生成 diff，也不返回完整成员文件。宿主程序根据原文件逐项应用精确片段替换；未被修改的文本始终保留原文。宿主从原文件与最终文件自动生成 diff，用于审计和统计。
 
 ### 4.2 输入
 
@@ -289,18 +291,19 @@ conflict_rate = conflict_items / max(mapping_items, actual_helper_calls, 1)
 SYSTEM：
 
 - 角色：资深 Python 重构工程师。
-- 任务：从多个独立脚本中发现共性 helper，抽成 `common.py`，并改写每个脚本。
+- 任务：从多个独立脚本中发现共性 helper，抽成 `common.py`，并为每个脚本提出局部修改意图。
 - 约束：
   - 不引入第三方依赖。
   - 不改变输入输出行为。
   - 保留每个文件自己的 stdin/stdout 主流程。
   - `common.py` 只放可复用 helper 和必要标准库 imports。
   - 输出必须是可解析 JSON。
+  - 修改意图只包含精确的 `original` 与 `replacement` 片段，不包含行号、diff 或完整文件。
 
 USER：
 
 - 列出 `{file_id, source_code}`。
-- 要求完整输出 library 和所有成员改写结果。
+- 要求完整输出 library 和每个成员的局部修改意图。
 
 JSON schema：
 
@@ -312,12 +315,11 @@ JSON schema：
   },
   "members": {
     "file_000.py": {
-      "new_content": "...",
-      "call_mapping": [
+      "edits": [
         {
-          "helper": "helper_name",
-          "original_role": "what original logic this replaces",
-          "call_sites": ["brief location or statement"]
+          "original": "exact source fragment",
+          "replacement": "exact replacement fragment",
+          "rationale": "what this local change does"
         }
       ]
     }
@@ -334,18 +336,24 @@ JSON schema：
 2. 调 DeepSeek V4 Flash API 一次。
 3. 保存原始响应到 `raw_response.txt`。
 4. 解析 JSON；解析失败则回炉一次，仍失败则该 cluster 标记为 extraction failed。
-5. 写入：
+5. 宿主按顺序将每个 `original` 片段替换为 `replacement`：完全位于字符串或注释中的匹配不计入，代码区域必须恰好匹配一次，重叠或歧义修改直接失败；不应用模型提供的行号或 diff。
+6. 宿主从原始文件和最终文件自动生成审计 diff，并写入：
 
 ```text
 results/baseline_a/<cluster_id>/common.py
 results/baseline_a/<cluster_id>/refactored/file_*.py
 results/baseline_a/<cluster_id>/raw_output.json
 results/baseline_a/<cluster_id>/call_log.json
+results/baseline_a/<cluster_id>/diffs/file_*.py.diff
 ```
 
-6. 编译检查：`python -m py_compile common.py refactored/*.py`。
-7. 编译失败则把错误信息追加给 LLM 回炉一次，要求完整重输出 JSON。
-8. 跑五项指标。
+7. 统一检查：
+   - 修改是否成功应用；
+   - `common.py` 和最终成员文件是否能解析、编译；
+   - 被修改成员是否通过 AST 实际使用 `common.py` 的 API；
+   - 最终行为测试是否通过。
+8. 编译或宿主静态检查失败时，将错误信息追加给 LLM 回炉一次；行为测试结果由测试作为最终语义裁判，不用模型自述的 mapping 替代。
+9. 跑可用指标；Baseline-a 的冲突率标记为 `not_available`。
 
 ---
 
@@ -428,23 +436,20 @@ JSON schema：
 
 ### 5.4 Step 3：应用成员改写
 
-将 Step 2 生成的 `common.py`、Step 1 的子簇信息和成员源码交给独立的成员改写调用。该步骤不重新设计公共库，只负责描述每个成员文件如何调用已有 helper。
+将 Step 2 生成的 `common.py`、Step 1 的子簇信息和成员源码交给独立的成员改写调用。该步骤不重新设计公共库，只负责描述每个成员文件如何调用已有 helper。若成员意图无法应用、无法编译、AST 检查失败或行为测试失败，固定 Step 2 的 `common.py`，只重新调用该步骤修正成员意图。
 
-成员结果只允许包含严格 unified diff 和 `edit_mapping`：
+成员结果只允许包含有序的局部修改意图，不包含行号、diff 或完整文件：
 
 ```json
 {
   "refactors": [
     {
       "file_id": "file_000.py",
-      "diff": "...",
-      "edit_mapping": [
+      "edits": [
         {
-          "edit_id": "edit_1",
-          "helper": "helper_name",
-          "removed_hunks": [1],
-          "added_hunks": [1],
-          "relationship": "..."
+          "original": "exact source fragment",
+          "replacement": "exact replacement fragment",
+          "rationale": "..."
         }
       ]
     }
@@ -452,7 +457,7 @@ JSON schema：
 }
 ```
 
-宿主程序将 diff 精确应用到原始成员源码，并检查 helper 存在、删除和新增 hunk 已对应、新增代码确实调用 common helper。检查通过后才写出 `refactored/file_*.py`。
+宿主程序将每个 `original` 精确替换为 `replacement`，忽略完全位于字符串或注释中的匹配，保留所有未覆盖的原文；检查代码区域片段是否恰好匹配一次、最终文件是否可解析和编译、修改成员是否通过 AST 使用 `common.py`，并运行行为测试。检查通过后才写出 `refactored/file_*.py`，再从原文件和最终文件自动生成审计 diff。
 
 ### 5.5 运行逻辑
 
@@ -472,9 +477,10 @@ results/baseline_b/<cluster_id>/<sub_cluster_id>/common.py
 results/baseline_b/<cluster_id>/<sub_cluster_id>/refactored/file_*.py
 results/baseline_b/<cluster_id>/<sub_cluster_id>/raw_output.json
 results/baseline_b/<cluster_id>/<sub_cluster_id>/call_log.json
+results/baseline_b/<cluster_id>/<sub_cluster_id>/diffs/file_*.py.diff
 ```
 
-3. 编译失败或 JSON 解析失败，最多回炉一次。
+3. 成员意图应用、编译、AST 或行为测试失败时，固定已经生成的 `common.py`，最多只回炉成员改写调用；不重新生成公共库。
 4. 跑与 Baseline-a 相同的五项指标。
 5. 对没有进入任何有效子簇的文件，记为 `not_refactored`，pass 仍可单独报告，但不计入抽库压缩收益。
 
@@ -535,7 +541,7 @@ Baseline-b 额外附表：
 - 测试失败
 - 抽出空 `common.py`
 - `common.py` 有 API 但没有任何 refactored 文件使用
-- `call_mapping` 与实际调用冲突
+- 局部修改意图无法应用、编译失败、AST 未检测到 common.py 使用或行为测试失败
 
 ---
 
@@ -618,7 +624,7 @@ Baseline-b 额外附表：
 
 
 2 任务设定：输入输出形式化（cluster 源码 → common.py + 改写文件）、功能等价约束、LLM 只可见 solution 源码（不泄漏题名/题面/测试）
-3 方法：3.1 Baseline-a 单次端到端；3.2 Baseline-b 三步流水线（发现子簇 → 生成公共库 → 应用成员 diff）；3.3 共同设置（温度 0、一次回炉、JSON schema 约束）
+3 方法：3.1 Baseline-a 单次端到端；3.2 Baseline-b 三步流水线（发现子簇 → 生成公共库 → 应用成员修改意图）；3.3 共同设置（温度 0、一次回炉、JSON schema 约束）
 4 评估设置：两个数据集（CodeContests 10 簇×30 题 vs Scrapy 24 文件 pytest 套件）、模型（DeepSeek V4 Flash API）、五项指标定义与判定顺序（先 pass 后压缩）
 5 实验结果：按数据集×方法的主表 + 聚合统计，不做逐簇罗列
 6 分析（逐 RQ）：

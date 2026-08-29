@@ -11,21 +11,11 @@ Return this JSON schema:
   },
   "members": {
     "file_000.py": {
-      "diff": "",
-      "edit_mapping": [
+      "edits": [
         {
-          "edit_id": "edit_1",
-          "helper": "helper_name",
-          "removed_hunks": [1],
-          "added_hunks": [1],
-          "relationship": "what deleted implementation is replaced by the common.py call"
-        }
-      ],
-      "call_mapping": [
-        {
-          "helper": "helper_name",
-          "original_role": "what original logic this replaces",
-          "call_sites": ["brief location or statement"]
+          "original": "exact source fragment to replace",
+          "replacement": "exact replacement fragment",
+          "rationale": "what this local change does"
         }
       ]
     }

@@ -48,6 +48,18 @@ def actual_calls(result_dir: Path, apis: set[str]) -> dict[str, set[str]]:
 
 def measure(result_dir: Path) -> dict[str, Any]:
     apis = common_apis(result_dir / "common.py")
+    call_log = json.loads((result_dir / "call_log.json").read_text(encoding="utf-8")) if (result_dir / "call_log.json").exists() else {}
+    if call_log.get("mapping_source") == "model_edit_intents":
+        actual = actual_calls(result_dir, apis)
+        actual_items = sum(len(helpers) for helpers in actual.values())
+        return {
+            "mapping_items": 0,
+            "actual_helper_calls": actual_items,
+            "conflict_items": 0,
+            "conflict_rate": None,
+            "conflicts": [],
+            "note": "This baseline supplies local edit intents, not a model helper mapping; conflict rate is not applicable.",
+        }
     claimed = load_mapping(result_dir)
     actual = actual_calls(result_dir, apis)
     files = sorted(set(claimed) | set(actual))
@@ -78,7 +90,7 @@ def measure(result_dir: Path) -> dict[str, Any]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Measure LLM call_mapping conflicts.")
+    parser = argparse.ArgumentParser(description="Measure model mapping conflicts against AST usage.")
     parser.add_argument("--result-dir", type=Path, required=True)
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()

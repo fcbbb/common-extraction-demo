@@ -33,6 +33,33 @@ def count_tokens(text: str) -> tuple[int, str]:
         return len(tokens), "python-tokenize"
 
 
+def strip_comments(text: str) -> str:
+    """Remove Python comments while preserving strings and line endings."""
+    offsets = [0]
+    for line in text.splitlines(keepends=True):
+        offsets.append(offsets[-1] + len(line))
+
+    comment_spans = []
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(text).readline)
+        for token in tokens:
+            if token.type != tokenize.COMMENT:
+                continue
+            start = offsets[token.start[0] - 1] + token.start[1]
+            end = offsets[token.end[0] - 1] + token.end[1]
+            comment_spans.append((start, end))
+    except (IndentationError, tokenize.TokenError) as exc:
+        raise ValueError(f"Source could not be tokenized while removing comments: {exc}") from exc
+
+    parts = []
+    cursor = 0
+    for start, end in comment_spans:
+        parts.append(text[cursor:start])
+        cursor = end
+    parts.append(text[cursor:])
+    return "".join(parts)
+
+
 def concat_files(paths: list[Path]) -> str:
     return "\n\n".join(path.read_text(encoding="utf-8") for path in paths if path.exists())
 
@@ -50,12 +77,13 @@ def measure(
         refactored_files = [f for f in refactored_files if f.name in ids]
     before_text = concat_files(original_files)
     after_text = concat_files([result_dir / "common.py", *refactored_files])
-    before_tokens, tokenizer = count_tokens(before_text)
-    after_tokens, after_tokenizer = count_tokens(after_text)
+    before_tokens, tokenizer = count_tokens(strip_comments(before_text))
+    after_tokens, after_tokenizer = count_tokens(strip_comments(after_text))
     if tokenizer != after_tokenizer:
         raise RuntimeError(f"Tokenizer mismatch: {tokenizer} vs {after_tokenizer}")
     return {
         "tokenizer": tokenizer,
+        "comments_excluded": True,
         "tokens_before": before_tokens,
         "tokens_after": after_tokens,
         "token_ratio_after_before": after_tokens / before_tokens if before_tokens else None,

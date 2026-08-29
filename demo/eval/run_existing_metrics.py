@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from demo.baselines.runner_utils import (
+    behavior_tests_ok,
     compile_result,
     load_json_if_exists,
     load_manifest,
@@ -20,7 +21,11 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def update_status_with_metrics(status_path: Path, compile_info: dict[str, Any], metrics: dict[str, Any] | None) -> dict[str, Any]:
     status = load_json_if_exists(status_path) or {}
-    status["status"] = "ok" if compile_info.get("ok") else "compile_failed"
+    status["status"] = (
+        "compile_failed" if not compile_info.get("ok")
+        else "tests_failed" if not behavior_tests_ok(metrics)
+        else "ok"
+    )
     status["compile"] = compile_info
     status["metrics"] = metrics
     write_json(status_path, status)
