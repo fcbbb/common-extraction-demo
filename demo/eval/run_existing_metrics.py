@@ -90,14 +90,33 @@ def run_baseline_b_metrics(
     test_mode: str,
     workers: int | None = None,
 ) -> list[dict[str, Any]]:
+    """Subcluster-method metrics (baseline_b / signal share the same discovery layout)."""
+    return run_subcluster_method_metrics(
+        "baseline_b", clusters, dataset_dir, results_dir, timeout_sec,
+        test_limit, compare_mode, normalize, test_mode, workers,
+    )
+
+
+def run_subcluster_method_metrics(
+    method: str,
+    clusters: list[dict[str, Any]],
+    dataset_dir: Path,
+    results_dir: Path,
+    timeout_sec: float,
+    test_limit: int | None,
+    compare_mode: str,
+    normalize: str,
+    test_mode: str,
+    workers: int | None = None,
+) -> list[dict[str, Any]]:
     cluster_results = []
     for cluster in clusters:
         cluster_id = cluster["cluster_id"]
-        cluster_out_dir = results_dir / "baseline_b" / cluster_id
+        cluster_out_dir = results_dir / method / cluster_id
         discovery = load_json_if_exists(cluster_out_dir / "discovery.json")
         if not discovery:
             result = {
-                "baseline": "baseline_b",
+                "baseline": method,
                 "cluster_id": cluster_id,
                 "status": "missing_discovery",
                 "reason": f"No existing discovery under {cluster_out_dir}",
@@ -119,7 +138,7 @@ def run_baseline_b_metrics(
             status_path = out_dir / "status.json"
             if not (out_dir / "common.py").exists() or not (out_dir / "refactored").exists():
                 sub_result = {
-                    "baseline": "baseline_b",
+                    "baseline": method,
                     "cluster_id": cluster_id,
                     "subcluster_id": sub_id,
                     "members": subcluster["members"],
@@ -150,7 +169,7 @@ def run_baseline_b_metrics(
 
         covered = set().union(*(set(item["members"]) for item in valid)) if valid else set()
         result = {
-            "baseline": "baseline_b",
+            "baseline": method,
             "cluster_id": cluster_id,
             "status": "ok",
             "discovered_subclusters": len(subclusters),
@@ -160,7 +179,7 @@ def run_baseline_b_metrics(
         }
         write_json(cluster_out_dir / "status.json", result)
         cluster_results.append(result)
-    write_json(results_dir / "baseline_b" / "summary.json", cluster_results)
+    write_json(results_dir / method / "summary.json", cluster_results)
     return cluster_results
 
 
@@ -169,7 +188,7 @@ def main() -> None:
     parser.add_argument("--manifest", type=Path, default=ROOT / "demo" / "datasets" / "codecontest" / "cluster_manifest.json")
     parser.add_argument("--dataset-dir", type=Path, default=ROOT / "demo" / "datasets" / "codecontest")
     parser.add_argument("--results-dir", type=Path, default=ROOT / "demo" / "results" / "codecontest")
-    parser.add_argument("--baseline", choices=["a", "b", "both"], default="a")
+    parser.add_argument("--baseline", choices=["a", "b", "signal", "both"], default="a")
     parser.add_argument("--cluster-id", action="append")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--timeout-sec", type=float, default=5.0)
@@ -188,6 +207,8 @@ def main() -> None:
         run_baseline_a_metrics(clusters, args.dataset_dir, args.results_dir, args.timeout_sec, test_limit, args.compare_mode, args.normalize, args.test_mode, workers)
     if args.baseline in {"b", "both"}:
         run_baseline_b_metrics(clusters, args.dataset_dir, args.results_dir, args.timeout_sec, test_limit, args.compare_mode, args.normalize, args.test_mode, workers)
+    if args.baseline in {"signal", "both"}:
+        run_subcluster_method_metrics("signal", clusters, args.dataset_dir, args.results_dir, args.timeout_sec, test_limit, args.compare_mode, args.normalize, args.test_mode, workers)
 
 
 if __name__ == "__main__":

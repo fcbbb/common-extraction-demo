@@ -71,6 +71,40 @@ MDL 模型不存在时只警告不报错；换模型：
 sbatch --export=ALL,BASELINE=a,MODEL_PATH=/path/to/other.gguf run_eval.sh
 ```
 
+## signal 方法（三路工具信号 + LLM 判定门 + 抽取）
+
+发现 + 判定门 + 抽取一条命令（`--resume` 续跑；簇级 status 已 ok 的跳过）：
+
+```bash
+conda run -n qwen-gguf python -m demo.baselines.run_signal \
+  --manifest demo/datasets/codecontest/cluster_manifest.json \
+  --dataset-dir demo/datasets/codecontest \
+  --results-dir demo/results/codecontest \
+  --cluster-id 0 --cluster-id 1 --resume
+```
+
+只跑发现（不调抽取/判定 API 用 `--skip-gate`；已 gate 过的簇加 `--resume` 复用判定结果）：
+
+```bash
+conda run -n qwen-gguf python -m demo.discovery.discover_cluster \
+  --manifest demo/datasets/codecontest/cluster_manifest.json \
+  --dataset-dir demo/datasets/codecontest \
+  --results-dir demo/results/codecontest --cluster-id 0
+```
+
+评测与报告（GPU + MDL；扫描 a/b/signal 三方法同表）：
+
+```bash
+conda run -n qwen-gguf python -m demo.eval.run_existing_metrics \
+  --manifest demo/datasets/codecontest/cluster_manifest.json \
+  --dataset-dir demo/datasets/codecontest \
+  --results-dir demo/results/codecontest --baseline signal
+conda run -n qwen-gguf python -m demo.eval.report \
+  --results-dir demo/results/codecontest --out demo/reports/report_signal.md
+```
+
+语义 embedding（C2LLM-0.5B，torch env）首次按簇计算并缓存到 `demo/discovery/cache/`，后续复用；想清掉某簇向量重算用 `--force-semantic`。其他开关（`--test-mode` / `--timeout-sec` / `--test-limit` 等）与 baseline 相同。
+
 ## complex 数据集（Scrapy slice）
 
 路径/模式全部由 `DATASET=complex` 自动切换，其余不变：

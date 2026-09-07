@@ -40,10 +40,14 @@ def baseline_a_rows(results_dir: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def baseline_b_rows(results_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def method_rows(results_dir: Path, method: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Main-table rows + discovery-table rows for one subcluster method dir (baseline_b, signal)."""
     main_rows = []
     discovery_rows = []
-    for cluster_status_path in sorted((results_dir / "baseline_b").glob("*/status.json")):
+    method_root = results_dir / method
+    if not method_root.exists():
+        return main_rows, discovery_rows
+    for cluster_status_path in sorted(method_root.glob("*/status.json")):
         status = load_json(cluster_status_path) or {}
         cluster_id = cluster_status_path.parent.name
         discovery_rows.append(
@@ -58,7 +62,7 @@ def baseline_b_rows(results_dir: Path) -> tuple[list[dict[str, Any]], list[dict[
         for sub_status_path in sorted(cluster_status_path.parent.glob("*/status.json")):
             sub_status = load_json(sub_status_path) or {}
             metrics = sub_status.get("metrics") or load_json(sub_status_path.parent / "metrics.json") or {}
-            main_rows.append(flat_row("baseline_b", cluster_id, sub_status_path.parent.name, sub_status, metrics))
+            main_rows.append(flat_row(method, cluster_id, sub_status_path.parent.name, sub_status, metrics))
     return main_rows, discovery_rows
 
 
@@ -92,15 +96,22 @@ def table(headers: list[str], rows: list[list[str]]) -> list[str]:
     return lines
 
 
+def _relpath(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
 def collect_failures(results_dir: Path) -> list[str]:
     failures = []
     for status_path in sorted(results_dir.glob("*/*/status.json")) + sorted(results_dir.glob("*/*/*/status.json")):
         status = load_json(status_path) or {}
         if status.get("status") not in {None, "ok"}:
-            failures.append(f"- `{status_path.relative_to(ROOT)}`: {status.get('status')} - {status.get('reason', '')}")
+            failures.append(f"- `{_relpath(status_path)}`: {status.get('status')} - {status.get('reason', '')}")
         compile_info = status.get("compile") or {}
         if compile_info and not compile_info.get("ok", True):
-            failures.append(f"- `{status_path.relative_to(ROOT)}`: compile_failed")
+            failures.append(f"- `{_relpath(status_path)}`: compile_failed")
     return failures
 
 
@@ -112,8 +123,12 @@ DATASET_LABELS = {
 
 def render_dataset_section(results_dir: Path, label: str) -> list[str]:
     rows = baseline_a_rows(results_dir)
-    b_rows, discovery_rows = baseline_b_rows(results_dir)
-    rows.extend(b_rows)
+    discovery_sections = []
+    for method in ("baseline_b", "signal"):
+        m_rows, discovery_rows = method_rows(results_dir, method)
+        rows.extend(m_rows)
+        if discovery_rows:
+            discovery_sections.append((method, discovery_rows))
 
     lines = [f"## {label}", "", "### Main Table", ""]
     lines.extend(
@@ -150,22 +165,23 @@ def render_dataset_section(results_dir: Path, label: str) -> list[str]:
         )
     )
 
-    lines.extend(["", "### Baseline-b Discovery", ""])
-    lines.extend(
-        table(
-            ["cluster", "discovered subclusters", "valid subclusters", "noise files", "notes"],
-            [
+    for method, discovery_rows in discovery_sections:
+        lines.extend(["", f"### {method} Discovery", ""])
+        lines.extend(
+            table(
+                ["cluster", "discovered subclusters", "valid subclusters", "noise files", "notes"],
                 [
-                    row["cluster"],
-                    fmt_num(row["discovered"]),
-                    fmt_num(row["valid"]),
-                    fmt_num(row["noise"]),
-                    row["notes"],
-                ]
-                for row in discovery_rows
-            ],
+                    [
+                        row["cluster"],
+                        fmt_num(row["discovered"]),
+                        fmt_num(row["valid"]),
+                        fmt_num(row["noise"]),
+                        row["notes"],
+                    ]
+                    for row in discovery_rows
+                ],
+            )
         )
-    )
 
     failures = collect_failures(results_dir)
     lines.extend(["", "### Failure Appendix", ""])

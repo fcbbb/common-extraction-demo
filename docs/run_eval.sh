@@ -20,7 +20,7 @@ set -Eeuo pipefail
 PROJECT_DIR="/home/xiaoheng/demo_common_extraction"
 CONDA_ENV="${CONDA_ENV:-qwen-gguf}"
 DATASET="${DATASET:-codecontest}"         # codecontest (default) or complex (Scrapy slice)
-BASELINE="${BASELINE:-a}"                 # a, b, or both
+BASELINE="${BASELINE:-a}"                 # a, b, signal, or both (report.py 会合并 a/b/signal 三方法同表)
 CLUSTER_ID="${CLUSTER_ID:-all}"           # 0..9, or all
 RESULTS_SUFFIX="${RESULTS_SUFFIX:-}"       # optional result directory suffix, e.g. _edits
 TEST_TIMEOUT_SEC="${TEST_TIMEOUT_SEC:-5}"

@@ -3,6 +3,10 @@ model/
 demo/results/
 slurm_log/
 
+# 信号方法 embedding 模型与缓存（可再生）
+demo/discovery/models/
+demo/discovery/cache/
+
 # Python
 __pycache__/
 *.pyc

@@ -70,6 +70,46 @@ bash docs/run_eval.sh           # 默认 BASELINE=a
 
 只重算 MDL（不动其他指标）：`bash docs/recompute_mdl.sh`。
 
+## 跑 signal 方法（工具信号发现 + LLM 判定门）
+
+与 baseline-b 的差异只在**发现阶段**：baseline-b 一次 LLM 调用直接给子簇；signal 先由三路确定性工具信号找候选 —— S1 逐字 token 克隆、S2 AST 骨架结构克隆、S3 语义 embedding（C2LLM-0.5B）—— 再用 LLM 判定门逐候选确认/收窄/拒绝，产出与 baseline-b 同 schema 的 `discovery.json`，抽取复用 baseline-b 引擎，同管线评估出报告。
+
+```bash
+# 阶段 1a：发现 + 判定门 + 抽取（DeepSeek API，CPU 即可；语义信号在带 torch 的 experiments env 里跑一次并缓存）
+export DEEPSEEK_API_KEY=...
+conda run -n qwen-gguf python -m demo.baselines.run_signal \
+  --manifest demo/datasets/codecontest/cluster_manifest.json \
+  --dataset-dir demo/datasets/codecontest \
+  --results-dir demo/results/codecontest \
+  --resume          # 跳过已 ok 的 cluster；只跑发现用 --discovery-only
+
+# 只跑发现（不调抽取 API，--skip-gate 则连判定门也不调）：
+conda run -n qwen-gguf python -m demo.discovery.discover_cluster \
+  --manifest demo/datasets/codecontest/cluster_manifest.json \
+  --dataset-dir demo/datasets/codecontest --results-dir demo/results/codecontest \
+  --cluster-id 0 --cluster-id 1
+
+# 阶段 2：评估 + 报告（GPU + model/Qwen3.8-27B-Q4_K_M.gguf）
+conda run -n qwen-gguf python -m demo.eval.run_existing_metrics \
+  --manifest demo/datasets/codecontest/cluster_manifest.json \
+  --dataset-dir demo/datasets/codecontest --results-dir demo/results/codecontest \
+  --baseline signal
+conda run -n qwen-gguf python -m demo.eval.report \
+  --results-dir demo/results/codecontest --out demo/reports/report_signal.md
+```
+
+signal 结果布局（与 baseline_b 同根平级，抽取产物形态一致，仅 status 的 `baseline` 字段为 `signal`）：
+
+```
+demo/results/codecontest/signal/<cluster_id>/
+  discovery_candidates.json    # 工具信号候选（含逐对证据，审计用）
+  gate_c*_raw_response.txt     # 每候选判定门原始响应/调用日志
+  discovery.json               # 最终有效簇 + noise（与 baseline_b 同 schema）
+  sub_0/{common.py, refactored/, ...}   # 每个有效子簇一次独立抽取
+```
+
+语义向量缓存于 `demo/discovery/cache/`，簇级改动不重算；`--force-semantic` 可绕过。
+
 ## 跑你自己的抽取方法
 
 核心思路：**抽取方法自由，评估管线固定**。你只需要按下面的输出契约把你的结果写进一个结果目录，剩下的评估和报告全部复用。
@@ -83,7 +123,7 @@ bash docs/run_eval.sh           # 默认 BASELINE=a
 
 ### 输出契约（评估器读什么）
 
-评估和报告代码硬编码了 `baseline_a` / `baseline_b` 两个子目录名，但结果目录可以任选。建议用一个新目录，例如 `demo/results_mymethod/`：
+评估代码直接支持本仓库三种方法目录 `baseline_a` / `baseline_b` / `signal`（`run_existing_metrics --baseline a|b|signal|both`，report.py 自动扫三者的 Main Table + 发现附表）。第三方方法把结果写进一个新目录即可（`baseline_a` / `baseline_b` 的布局都行），例如 `demo/results_mymethod/`：
 
 **baseline_a 布局（整簇抽取）** —— 每个 cluster 一个目录：
 
@@ -136,7 +176,7 @@ conda run -n qwen-gguf python -m demo.eval.report \
 
 ### 用自己的方法名而不是 baseline_a/b
 
-`run_existing_metrics.py` 和 `report.py` 都硬编码了子目录名：`demo/eval/run_existing_metrics.py` 的 `run_baseline_a_metrics`/`run_baseline_b_metrics` 写入 `results_dir/"baseline_a"`，`demo/eval/report.py` 的 `baseline_a_rows`/`baseline_b_rows` 读取同名目录。要新增方法名，改这两处即可，评估逻辑不用动。
+`run_existing_metrics.py` 的 `run_baseline_a_metrics` 固定写 `results_dir/"baseline_a"`；`run_baseline_b_metrics` 与 `run_subcluster_method_metrics(method, ...)` 是同一个引擎，`--baseline signal` 即 `method="signal"`。`report.py` 的 `baseline_a_rows` / `method_rows(results_dir, method)` 读取对应目录，`render_dataset_section` 自动扫 `baseline_b` + `signal`。新增方法名：整簇抽取照抄 a，子簇抽取把结果写进自己的目录后把方法名加进 `report.py` 的 method 元组即可，评估逻辑不用动。
 
 ## 相关文档
 
