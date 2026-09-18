@@ -1,10 +1,11 @@
-"""S3 semantic-signal worker: embed code files with C2LLM-0.5B, emit pairwise cosine.
+"""S3 semantic-signal worker: embed code units with C2LLM-0.5B, emit pairwise cosine.
 
 Runs in a torch-capable env (never in the main qwen-gguf env).  Invoked by
 semantic_signal.py as a subprocess:
     python -m demo.discovery.semantic_signal_worker --input in.json --output out.json [--model M]
 Input:  {"files": [{"file_id": ..., "source_code": ...}]}
-Output: {"model": ..., "files": [file_id...], "pairs": [{"file_a", "file_b", "cosine"}]}
+Output: {"model": ..., "units": [{"file_id", "unit_id"}],
+         "pairs": [{"file_a", "unit_a", "file_b", "unit_b", "cosine"}]}
 """
 from __future__ import annotations
 
@@ -14,6 +15,8 @@ import os
 import sys
 from pathlib import Path
 from typing import Any
+
+from .units import CONTAINER_TYPES, method_containers, parse_units
 
 # Local vendored copy: upstream modeling imports peft/deepspeed for training-only
 # paths that never run here; the copy strips those imports (see models/C2LLM-0.5B).
@@ -52,25 +55,76 @@ def _embed(sources: list[dict[str, str]], model_name: str) -> tuple[Any, list[An
     raise RuntimeError("no usable device")  # pragma: no cover
 
 
+def _line_text(lines: list[str], start: int, end: int) -> str:
+    return "".join(lines[start - 1:end])
+
+
+def _unit_sources(files: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Split files into top-level units, class methods, and module remainder."""
+    result: list[dict[str, str]] = []
+    for entry in files:
+        file_id, source = entry["file_id"], entry["source_code"]
+        tree, units, error = parse_units(source)
+        if tree is None or units is None or error:
+            if source.strip():
+                result.append({"file_id": file_id, "unit_id": "module", "source_code": source})
+            continue
+        lines = source.splitlines(keepends=True)
+        covered: list[tuple[int, int]] = []
+        for node in tree.body:
+            if not isinstance(node, CONTAINER_TYPES):
+                continue
+            decorator_rows = [decorator.lineno for decorator in getattr(node, "decorator_list", [])]
+            start = min([node.lineno, *decorator_rows])
+            end = node.end_lineno or node.lineno
+            covered.append((start, end))
+            kind = "function" if node.__class__.__name__ in {"FunctionDef", "AsyncFunctionDef"} else "class"
+            text = _line_text(lines, start, end)
+            if text.strip():
+                result.append({"file_id": file_id, "unit_id": f"{kind}:{node.name}", "source_code": text})
+        for unit_id, node in method_containers(tree):
+            decorator_rows = [decorator.lineno for decorator in getattr(node, "decorator_list", [])]
+            start = min([node.lineno, *decorator_rows])
+            end = node.end_lineno or node.lineno
+            text = _line_text(lines, start, end)
+            if text.strip():
+                result.append({"file_id": file_id, "unit_id": unit_id, "source_code": text})
+        module_lines = [
+            line for index, line in enumerate(lines, 1)
+            if not any(start <= index <= end for start, end in covered)
+        ]
+        module_text = "".join(module_lines)
+        if module_text.strip():
+            result.append({"file_id": file_id, "unit_id": "module", "source_code": module_text})
+    return result
+
+
 def cosine_matrix(sources: list[dict[str, str]], model_name: str) -> dict[str, Any]:
-    _, embs = _embed(sources, model_name)
+    unit_sources = _unit_sources(sources)
+    if not unit_sources:
+        return {"model": model_name, "units": [], "pairs": []}
+    _, embs = _embed(unit_sources, model_name)
     try:
         import numpy as np
     except ImportError:  # pragma: no cover
         np = None  # type: ignore[assignment]
     if np is None or not hasattr(embs, "shape"):
         raise RuntimeError("embedding output not numpy")
-    file_ids = [s["file_id"] for s in sources]
+    units = [{"file_id": s["file_id"], "unit_id": s["unit_id"]} for s in unit_sources]
     pairs = []
-    for i in range(len(file_ids)):
-        for j in range(i + 1, len(file_ids)):
+    for i in range(len(units)):
+        for j in range(i + 1, len(units)):
+            if units[i]["file_id"] == units[j]["file_id"]:
+                continue
             pairs.append({
-                "file_a": file_ids[i],
-                "file_b": file_ids[j],
+                "file_a": units[i]["file_id"],
+                "unit_a": units[i]["unit_id"],
+                "file_b": units[j]["file_id"],
+                "unit_b": units[j]["unit_id"],
                 "cosine": round(float(embs[i] @ embs[j]), 4),
             })
     pairs.sort(key=lambda p: -p["cosine"])
-    return {"model": model_name, "files": file_ids, "pairs": pairs}
+    return {"model": model_name, "units": units, "pairs": pairs}
 
 
 def main() -> int:
@@ -97,7 +151,7 @@ def main() -> int:
         return 1
     with open(args.output, "w") as fh:
         json.dump(out, fh)
-    print(f"[semantic] done: {len(out['pairs'])} pairs via {out['model']}", flush=True)
+    print(f"[semantic] done: {len(out['pairs'])} unit pairs via {out['model']}", flush=True)
     return 0
 
 

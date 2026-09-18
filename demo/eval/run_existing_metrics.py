@@ -42,6 +42,7 @@ def run_baseline_a_metrics(
     normalize: str,
     test_mode: str,
     workers: int | None = None,
+    include_mdl: bool = True,
 ) -> list[dict[str, Any]]:
     results = []
     for cluster in clusters:
@@ -70,6 +71,7 @@ def run_baseline_a_metrics(
                 normalize=normalize,
                 test_mode=test_mode,
                 workers=workers,
+                include_mdl=include_mdl,
             )
             if compile_info["ok"]
             else None
@@ -89,11 +91,13 @@ def run_baseline_b_metrics(
     normalize: str,
     test_mode: str,
     workers: int | None = None,
+    include_mdl: bool = True,
 ) -> list[dict[str, Any]]:
     """Subcluster-method metrics (baseline_b / signal share the same discovery layout)."""
     return run_subcluster_method_metrics(
         "baseline_b", clusters, dataset_dir, results_dir, timeout_sec,
         test_limit, compare_mode, normalize, test_mode, workers,
+        include_mdl,
     )
 
 
@@ -108,6 +112,7 @@ def run_subcluster_method_metrics(
     normalize: str,
     test_mode: str,
     workers: int | None = None,
+    include_mdl: bool = True,
 ) -> list[dict[str, Any]]:
     cluster_results = []
     for cluster in clusters:
@@ -161,6 +166,7 @@ def run_subcluster_method_metrics(
                     normalize=normalize,
                     test_mode=test_mode,
                     workers=workers,
+                    include_mdl=include_mdl,
                 )
                 if compile_info["ok"]
                 else None
@@ -197,6 +203,7 @@ def main() -> None:
     parser.add_argument("--normalize", choices=["strip", "whitespace"], default="whitespace")
     parser.add_argument("--test-mode", choices=["stdio", "pytest"], default="stdio", help="pytest for the dataset_complex Scrapy slice.")
     parser.add_argument("--workers", type=int, default=0, help="Parallel test workers. 0 = auto (min(cpu_count, 16)). Override with TEST_WORKERS env.")
+    parser.add_argument("--skip-mdl", action="store_true", help="Skip GGUF MDL measurement.")
     args = parser.parse_args()
 
     manifest = load_manifest(args.manifest)
@@ -204,11 +211,11 @@ def main() -> None:
     test_limit = None if args.test_limit == 0 else args.test_limit
     workers = args.workers if args.workers > 0 else None
     if args.baseline in {"a", "both"}:
-        run_baseline_a_metrics(clusters, args.dataset_dir, args.results_dir, args.timeout_sec, test_limit, args.compare_mode, args.normalize, args.test_mode, workers)
+        run_baseline_a_metrics(clusters, args.dataset_dir, args.results_dir, args.timeout_sec, test_limit, args.compare_mode, args.normalize, args.test_mode, workers, not args.skip_mdl)
     if args.baseline in {"b", "both"}:
-        run_baseline_b_metrics(clusters, args.dataset_dir, args.results_dir, args.timeout_sec, test_limit, args.compare_mode, args.normalize, args.test_mode, workers)
+        run_baseline_b_metrics(clusters, args.dataset_dir, args.results_dir, args.timeout_sec, test_limit, args.compare_mode, args.normalize, args.test_mode, workers, not args.skip_mdl)
     if args.baseline in {"signal", "both"}:
-        run_subcluster_method_metrics("signal", clusters, args.dataset_dir, args.results_dir, args.timeout_sec, test_limit, args.compare_mode, args.normalize, args.test_mode, workers)
+        run_subcluster_method_metrics("signal", clusters, args.dataset_dir, args.results_dir, args.timeout_sec, test_limit, args.compare_mode, args.normalize, args.test_mode, workers, not args.skip_mdl)
 
 
 if __name__ == "__main__":

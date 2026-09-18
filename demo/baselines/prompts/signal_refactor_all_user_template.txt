@@ -1,0 +1,25 @@
+Refactor every signal subcluster member using the fixed common.py.
+
+Input JSON:
+{payload}
+
+Honor subcluster.units exactly. Keep every byte outside the listed units unchanged, and when a unit contains both shared and unique behavior, edit only the shared span.
+
+Return this JSON schema. Do not return complete rewritten files, line numbers, or diffs:
+{
+  "refactors": [
+    {
+      "file_id": "file_000.py",
+      "edits": [
+        {
+          "original": "exact source fragment to replace",
+          "replacement": "exact replacement fragment",
+          "rationale": "what this local change does"
+        }
+      ],
+      "rationale": "..."
+    }
+  ]
+}
+
+Return exactly one refactors entry per input file.

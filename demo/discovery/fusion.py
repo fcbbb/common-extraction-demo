@@ -188,3 +188,185 @@ def fuse(
         "edges_kept": len(edges),
         "config": cfg,
     }
+
+
+def _unit_edge_key(file_a: str, unit_a: str, file_b: str, unit_b: str) -> tuple[tuple[str, str], tuple[str, str]]:
+    left, right = (file_a, unit_a), (file_b, unit_b)
+    return (left, right) if left < right else (right, left)
+
+
+def _unit_components(nodes: set[tuple[str, str]], edges: list[dict[str, Any]]) -> list[set[tuple[str, str]]]:
+    adjacency: dict[tuple[str, str], set[tuple[str, str]]] = {node: set() for node in nodes}
+    for edge in edges:
+        a, b = edge["a"], edge["b"]
+        adjacency.setdefault(a, set()).add(b)
+        adjacency.setdefault(b, set()).add(a)
+    seen: set[tuple[str, str]] = set()
+    components: list[set[tuple[str, str]]] = []
+    for start in sorted(adjacency):
+        if start in seen:
+            continue
+        stack = [start]
+        seen.add(start)
+        component: set[tuple[str, str]] = set()
+        while stack:
+            node = stack.pop()
+            component.add(node)
+            for neighbor in adjacency[node]:
+                if neighbor not in seen:
+                    seen.add(neighbor)
+                    stack.append(neighbor)
+        components.append(component)
+    return components
+
+
+def _unit_record(signal: str, record: dict[str, Any], file_a: str | None = None, file_b: str | None = None) -> tuple[tuple[str, str], tuple[str, str], dict[str, Any]] | None:
+    """Normalize one unit-pair record and retain its signal-specific evidence."""
+    if signal == "semantic":
+        fields = (record.get("file_a"), record.get("unit_a"), record.get("file_b"), record.get("unit_b"))
+        if not all(isinstance(value, str) for value in fields):
+            return None
+        a, b = _unit_edge_key(*fields)  # type: ignore[arg-type]
+        return a, b, {"cosine": record.get("cosine", 0.0)}
+    if all(isinstance(record.get(key), str) for key in ("file_a", "unit_a", "file_b", "unit_b")):
+        fa, ua, fb, ub = record["file_a"], record["unit_a"], record["file_b"], record["unit_b"]
+    else:
+        return None
+    a, b = _unit_edge_key(fa, ua, fb, ub)
+    return a, b, {
+        "shared_tokens": record.get("shared_tokens", 0),
+        "containment": record.get("containment", 0.0),
+        "n_runs": record.get("n_runs", 0),
+        "tokens_a": record.get("tokens_a", 0),
+        "tokens_b": record.get("tokens_b", 0),
+    }
+
+
+def fuse_units(signal_evidences: list[dict[str, Any]], cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Fuse signal evidence on ``(file_id, unit_id)`` vertices.
+
+    A component may therefore contain multiple units from one file, while each
+    unit instance is assigned to at most one candidate.  Candidate members stay
+    file IDs so the downstream discovery and extraction schema remains stable.
+    """
+    cfg = cfg or copy.deepcopy(DEFAULT_CFG)
+    nodes: set[tuple[str, str]] = set()
+    per_edge: dict[tuple[tuple[str, str], tuple[str, str]], dict[str, dict[str, Any]]] = defaultdict(dict)
+    for evidence in signal_evidences:
+        signal = evidence.get("signal")
+        if signal == "semantic":
+            for unit in evidence.get("units", []):
+                if isinstance(unit, dict) and isinstance(unit.get("file_id"), str) and isinstance(unit.get("unit_id"), str):
+                    nodes.add((unit["file_id"], unit["unit_id"]))
+            records = evidence.get("pairs", [])
+        else:
+            for file_id, unit_sizes in evidence.get("unit_tokens", {}).items():
+                for unit_id in unit_sizes:
+                    nodes.add((file_id, unit_id))
+            records = evidence.get("unit_pairs", [])
+            if not records:
+                records = [record for pair in evidence.get("pairs", []) for record in pair.get("unit_pairs", [])]
+        for raw in records:
+            normalized = _unit_record(signal, raw)
+            if normalized is None:
+                continue
+            a, b, value = normalized
+            nodes.update((a, b))
+            per_edge[(a, b)][signal] = value
+
+    semantic_edges = [values["semantic"]["cosine"] for values in per_edge.values() if "semantic" in values]
+    semantic_edges.sort(reverse=True)
+    semantic_cfg = cfg["semantic"]
+    semantic_cutoff = (
+        semantic_edges[max(0, min(len(semantic_edges) - 1, int(len(semantic_edges) * semantic_cfg["or_top_frac"]))) ]
+        if semantic_edges
+        else 0.0
+    )
+
+    def semantic_passes(cosine: float) -> bool:
+        return bool(semantic_edges) and (
+            cosine >= semantic_cfg["min_cosine"]
+            or (semantic_cfg["or_top_frac"] > 0 and cosine >= semantic_cutoff and cosine > 0.0)
+        )
+
+    edges: list[dict[str, Any]] = []
+    for (a, b), values in per_edge.items():
+        reasons: dict[str, bool] = {}
+        strength: tuple[float, int] = (0.0, 0)
+        for signal, value in values.items():
+            passed = semantic_passes(value["cosine"]) if signal == "semantic" else _passes(signal, cfg, value)
+            reasons[signal] = passed
+            if passed:
+                score = (value["cosine"], 1) if signal == "semantic" else (value["containment"], value["shared_tokens"])
+                strength = max(strength, score)
+        if any(reasons.values()):
+            edges.append({
+                "a": a,
+                "b": b,
+                "reasons": reasons,
+                "strength": strength[0],
+                "tokens": max((value.get("shared_tokens") or 0 for value in values.values()), default=0),
+                "signals": values,
+            })
+    edges.sort(key=lambda edge: (edge["strength"], edge["tokens"]), reverse=True)
+
+    chosen: list[dict[str, Any]] = []
+    degree: dict[tuple[str, str], int] = defaultdict(int)
+    for edge in edges:
+        if degree[edge["a"]] < cfg["top_neighbors"] and degree[edge["b"]] < cfg["top_neighbors"]:
+            chosen.append(edge)
+            degree[edge["a"]] += 1
+            degree[edge["b"]] += 1
+
+    while True:
+        components = [component for component in _unit_components(nodes, chosen) if len({file_id for file_id, _ in component}) >= 2]
+        oversized = next((component for component in components if len({file_id for file_id, _ in component}) > cfg["max_cluster"]), None)
+        if oversized is None:
+            break
+        internal = [edge for edge in chosen if edge["a"] in oversized and edge["b"] in oversized]
+        if not internal:
+            break
+        weakest = min(internal, key=lambda edge: (edge["strength"], edge["tokens"]))
+        chosen.remove(weakest)
+
+    components = [component for component in _unit_components(nodes, chosen) if len({file_id for file_id, _ in component}) >= 2]
+    components.sort(key=lambda component: -sum(
+        edge["strength"] for edge in edges if edge["a"] in component and edge["b"] in component
+    ))
+    candidates: list[dict[str, Any]] = []
+    assigned_files: set[str] = set()
+    for component in components:
+        members = sorted({file_id for file_id, _ in component})
+        component_edges = [edge for edge in edges if edge["a"] in component and edge["b"] in component]
+        reasons_union = {signal for edge in component_edges for signal, passed in edge["reasons"].items() if passed}
+        shared: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for edge in component_edges:
+            for signal, value in edge["signals"].items():
+                shared[signal].append({
+                    "file_a": edge["a"][0],
+                    "unit_a": edge["a"][1],
+                    "file_b": edge["b"][0],
+                    "unit_b": edge["b"][1],
+                    **value,
+                })
+        units = [
+            {"file_id": file_id, "unit_id": unit_id, "kind": unit_id.split(":", 1)[0] if ":" in unit_id else unit_id}
+            for file_id, unit_id in sorted(component)
+        ]
+        candidates.append({
+            "members": members,
+            "n_members": len(members),
+            "units": units,
+            "signals_hit": sorted(reasons_union),
+            "evidence": dict(shared),
+            "gain": sum(edge["tokens"] for edge in component_edges),
+        })
+        assigned_files.update(members)
+    file_ids = sorted({file_id for file_id, _ in nodes})
+    return {
+        "candidates": candidates,
+        "noise": [file_id for file_id in file_ids if file_id not in assigned_files],
+        "edges_total": len(per_edge),
+        "edges_kept": len(edges),
+        "config": cfg,
+    }

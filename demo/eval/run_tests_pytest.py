@@ -54,22 +54,37 @@ def find_cluster(manifest: dict[str, Any], cluster_id: str) -> dict[str, Any]:
     raise KeyError(f"Unknown cluster_id: {cluster_id}")
 
 
-def discover_scrapy_pkg() -> Path:
+def discover_python_pkg(package_name: str) -> Path:
     proc = subprocess.run(
-        [sys.executable, "-c", "import scrapy, os; print(os.path.dirname(scrapy.__file__))"],
+        [
+            sys.executable,
+            "-c",
+            "import importlib, os, sys; "
+            "pkg = importlib.import_module(sys.argv[1]); "
+            "print(os.path.dirname(pkg.__file__))",
+            package_name,
+        ],
         text=True, capture_output=True, check=False,
     )
     if proc.returncode != 0:
         raise RuntimeError(
-            "scrapy not importable in the current interpreter. "
-            "Run: pip install 'scrapy @ git+https://github.com/scrapy/scrapy@<slice_commit>'\n" + proc.stderr
+            f"{package_name} not importable in the current interpreter.\n" + proc.stderr
         )
     return Path(proc.stdout.strip())
 
 
 def build_overlay(tmp: Path, cluster: dict[str, Any], dataset_dir: Path, result_dir: Path | None) -> None:
-    """Materialize tmp/scrapy (installed package + slice overlay) and tmp/tests."""
-    scrapy_pkg = discover_scrapy_pkg()
+    """Materialize the package + slice overlay and tmp/tests.
+
+    The original complex dataset uses an installed Scrapy package.  A dataset
+    may instead provide ``package_source_rel`` in its manifest, which is useful
+    for self-contained packages such as django-storages.
+    """
+    package_name = cluster.get("package_name", "scrapy")
+    package_source_rel = cluster.get("package_source_rel")
+    package_source = (
+        dataset_dir / package_source_rel if package_source_rel else discover_python_pkg(package_name)
+    )
     overlay_targets: dict[str, Path] = {}
     for entry in cluster["files"]:
         source = (
@@ -81,18 +96,25 @@ def build_overlay(tmp: Path, cluster: dict[str, Any], dataset_dir: Path, result_
             raise FileNotFoundError(f"Missing source file {source}")
         overlay_targets[entry["rel_path"]] = source
 
-    dest_pkg = tmp / "scrapy"
-    dest_pkg.mkdir(parents=True)
-    for root, dirs, files in os.walk(scrapy_pkg):
-        dirs[:] = [d for d in dirs if d != "__pycache__"]
-        rel_root = Path(root).relative_to(scrapy_pkg)
-        (dest_pkg / rel_root).mkdir(parents=True, exist_ok=True)
-        for name in files:
-            rel = rel_root / name
-            if str(rel) in overlay_targets:
-                shutil.copy2(overlay_targets[str(rel)], dest_pkg / rel)
-            else:
-                os.symlink(Path(root) / name, dest_pkg / rel)
+    dest_pkg = tmp / package_name
+    if package_source_rel:
+        shutil.copytree(package_source, dest_pkg, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        for rel, source in overlay_targets.items():
+            target = dest_pkg / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+    else:
+        dest_pkg.mkdir(parents=True)
+        for root, dirs, files in os.walk(package_source):
+            dirs[:] = [d for d in dirs if d != "__pycache__"]
+            rel_root = Path(root).relative_to(package_source)
+            (dest_pkg / rel_root).mkdir(parents=True, exist_ok=True)
+            for name in files:
+                rel = rel_root / name
+                if str(rel) in overlay_targets:
+                    shutil.copy2(overlay_targets[str(rel)], dest_pkg / rel)
+                else:
+                    os.symlink(Path(root) / name, dest_pkg / rel)
 
     if result_dir is not None and (result_dir / "common.py").exists():
         shutil.copy2(result_dir / "common.py", tmp / "common.py")
@@ -100,7 +122,10 @@ def build_overlay(tmp: Path, cluster: dict[str, Any], dataset_dir: Path, result_
     test_dir = ROOT / cluster["test_dir"]
     shutil.copytree(test_dir, tmp / "tests", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 
-    conftest = Path(__file__).resolve().parent / "pytest_conftest.py"
+    conftest_name = cluster.get("pytest_conftest", "scrapy")
+    conftest = Path(__file__).resolve().parent / (
+        "pytest_conftest_generic.py" if conftest_name == "generic" else "pytest_conftest.py"
+    )
     shutil.copy2(conftest, tmp / "conftest.py")
 
 

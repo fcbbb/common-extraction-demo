@@ -580,6 +580,7 @@ def run_metrics(
     normalize: str = "whitespace",
     test_mode: str = "stdio",
     workers: int | None = None,
+    include_mdl: bool = True,
 ) -> dict[str, Any]:
     cluster_id = cluster["cluster_id"]
     metric_cluster = cluster
@@ -614,7 +615,10 @@ def run_metrics(
     tokens = measure_tokens(original_dir, out_dir, file_ids=file_ids)
     api_coverage = measure_api_coverage(out_dir)
     conflicts = measure_conflicts(out_dir)
-    mdl = measure_mdl(original_dir, out_dir, file_ids=file_ids)
+    mdl = measure_mdl(original_dir, out_dir, file_ids=file_ids) if include_mdl else {
+        "status": "skipped",
+        "reason": "MDL disabled for this evaluation",
+    }
     result = {
         "cluster_id": cluster_id,
         "metric_policy": {

@@ -27,6 +27,12 @@ from demo.baselines.runner_utils import (
 from demo.discovery.discover_cluster import discover_cluster
 
 ROOT = Path(__file__).resolve().parents[2]
+SIGNAL_PROMPT_SET = {
+    "common_system": ROOT / "demo" / "baselines" / "prompts" / "signal_common_system.txt",
+    "common_user": ROOT / "demo" / "baselines" / "prompts" / "signal_common_user_template.txt",
+    "refactor_system": ROOT / "demo" / "baselines" / "prompts" / "signal_refactor_all_system.txt",
+    "refactor_user": ROOT / "demo" / "baselines" / "prompts" / "signal_refactor_all_user_template.txt",
+}
 
 
 def run_cluster(
@@ -43,6 +49,7 @@ def run_cluster(
     rerun_metrics: bool,
     skip_metrics: bool,
     discovery_only: bool,
+    skip_semantic: bool,
     cfg: dict[str, Any],
     embedding_model: str,
     gate_cfg: dict[str, Any],
@@ -52,11 +59,26 @@ def run_cluster(
     try:
         previous_cluster = load_json_if_exists(cluster_out_dir / "status.json")
         previous_discovery = load_json_if_exists(cluster_out_dir / "discovery.json")
+        resume_cluster_complete = False
+        if resume and previous_cluster and previous_discovery:
+            cluster_files = {item["file_id"] for item in cluster["files"]}
+            previous_subclusters = [
+                sanitize_subcluster(item, cluster_files, index)
+                for index, item in enumerate(previous_discovery.get("clusters", []))
+            ]
+            valid_previous = [item for item in previous_subclusters if len(item["members"]) >= 2]
+            resume_cluster_complete = all(
+                (load_json_if_exists(cluster_out_dir / item["cluster_id"] / "status.json") or {}).get("status") == "ok"
+                and (cluster_out_dir / item["cluster_id"] / "common.py").exists()
+                and (cluster_out_dir / item["cluster_id"] / "refactored").is_dir()
+                for item in valid_previous
+            )
         if (
             resume
             and previous_cluster
             and previous_cluster.get("status") == "ok"
             and previous_discovery
+            and resume_cluster_complete
             and (not rerun_metrics or skip_metrics)
         ):
             print(
@@ -74,7 +96,7 @@ def run_cluster(
                 dataset_dir,
                 results_dir,
                 cfg,
-                skip_semantic=False,
+                skip_semantic=skip_semantic,
                 skip_gate=False,
                 embedding_model=embedding_model,
                 force_semantic=False,
@@ -125,6 +147,7 @@ def run_cluster(
                     resume,
                     rerun_metrics,
                     skip_metrics,
+                    SIGNAL_PROMPT_SET,
                 )
             except Exception as exc:
                 sub_result = {
@@ -173,6 +196,7 @@ def main() -> None:
     parser.add_argument("--rerun-metrics", action="store_true")
     parser.add_argument("--skip-metrics", action="store_true")
     parser.add_argument("--discovery-only", action="store_true", help="Stop after discovery.json; skip extraction.")
+    parser.add_argument("--skip-semantic", action="store_true", help="Use clone + AST discovery without the embedding worker.")
     args = parser.parse_args()
 
     manifest = load_manifest(args.manifest)
@@ -229,6 +253,7 @@ def main() -> None:
             args.rerun_metrics,
             args.skip_metrics,
             args.discovery_only,
+            args.skip_semantic,
             cfg,
             embedding_model,
             gate_cfg,

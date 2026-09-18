@@ -18,6 +18,7 @@ from demo.baselines.runner_utils import (
     build_user_prompt,
     read_text,
     save_call_log,
+    status,
     write_json,
 )
 
@@ -31,10 +32,14 @@ def _evidence_text(candidate: dict[str, Any]) -> str:
     for sig, items in ev.items():
         for it in items:
             if sig == "semantic":
-                lines.append(f"semantic: {it['file_a']}~{it['file_b']} cosine={it['cosine']}")
+                lines.append(
+                    f"semantic: {it['file_a']}({it.get('unit_a')})~{it['file_b']}({it.get('unit_b')}) "
+                    f"cosine={it['cosine']}"
+                )
             else:
                 lines.append(
-                    f"{sig}: {it['file_a']}~{it['file_b']} shared={it.get('shared_tokens')} tokens "
+                    f"{sig}: {it['file_a']}({it.get('unit_a')})~{it['file_b']}({it.get('unit_b')}) "
+                    f"shared={it.get('shared_tokens')} tokens "
                     f"containment={it.get('containment')} runs={it.get('n_runs')}"
                 )
     return "\n".join(lines) if lines else "(no pair evidence recorded)"
@@ -55,8 +60,8 @@ def _validate_decision(dec: dict[str, Any], candidate_id: str, members: list[str
             raise ValueError("each group must keep a members list of >= 2 files")
         if any(m not in members for m in sub) or len(set(sub)) != len(sub):
             raise ValueError("members must be a unique subset of the candidate's members")
-        if seen & set(sub):
-            raise ValueError("groups must be disjoint")
+        # A file may occur in multiple groups when different units from that
+        # file participate in different reusable components.
         seen |= set(sub)
 
 
@@ -65,6 +70,7 @@ def _call_gate(
     cluster_id: str,
     candidate_id: str,
     members: list[str],
+    units: list[dict[str, Any]],
     sources: dict[str, str],
     evidence_text: str,
     out_dir: Path,
@@ -76,6 +82,7 @@ def _call_gate(
             {
                 "candidate_id": candidate_id,
                 "members": members,
+                "units": units,
                 "files": [{"file_id": fid, "source_code": sources[fid]} for fid in members],
                 "evidence": evidence_text,
             }
@@ -135,36 +142,83 @@ def run_gate(
     clusters: list[dict[str, Any]] = []
     noise: list[str] = []
     rationale: list[str] = []
+    total_candidates = len(candidates_doc["candidates"])
     for index, cand in enumerate(candidates_doc["candidates"]):
         candidate_id = f"c{index}"
         members = cand["members"]
+        candidate_units = cand.get("units", [])
+        status(
+            f"signal cluster {cluster_id}: gate candidate "
+            f"{index + 1}/{total_candidates} start ({len(members)} members)"
+        )
         try:
-            decision = _call_gate(client, cluster_id, candidate_id, members, by_id, _evidence_text(cand), out_dir, cfg)
+            decision = _call_gate(
+                client,
+                cluster_id,
+                candidate_id,
+                members,
+                candidate_units,
+                by_id,
+                _evidence_text(cand),
+                out_dir,
+                cfg,
+            )
         except Exception as exc:  # noqa: BLE001 - failed candidates go to noise
             rationale.append(f"{candidate_id}: gate error -> noise ({exc})")
             noise.extend(members)
+            status(f"signal cluster {cluster_id}: gate candidate {index + 1}/{total_candidates} failed")
             continue
         groups = decision.get("groups", [])
         if not groups:
             rationale.append(f"{candidate_id}: rejected")
             noise.extend(members)
+            status(f"signal cluster {cluster_id}: gate candidate {index + 1}/{total_candidates} rejected")
             continue
         kept: set[str] = set()
         for group in groups:
             gmembers = sorted(dict.fromkeys(group["members"]))
+            group_set = set(gmembers)
+            units_for_group: dict[str, list[str]] = {member: [] for member in gmembers}
+            for item in candidate_units:
+                if item.get("file_id") not in group_set:
+                    continue
+                unit_id = item.get("unit_id")
+                if not isinstance(unit_id, str):
+                    continue
+                for evidence_items in cand.get("evidence", {}).values():
+                    if any(
+                        record.get("unit_a") == unit_id
+                        and record.get("file_a") == item.get("file_id")
+                        and record.get("file_b") in group_set
+                        for record in evidence_items
+                    ) or any(
+                        record.get("unit_b") == unit_id
+                        and record.get("file_b") == item.get("file_id")
+                        and record.get("file_a") in group_set
+                        for record in evidence_items
+                    ):
+                        units_for_group[item["file_id"]].append(unit_id)
+                        break
+            units_for_group = {file_id: sorted(set(unit_ids)) for file_id, unit_ids in units_for_group.items() if unit_ids}
             clusters.append({
                 "cluster_id": f"sub_{len(clusters)}",
                 "members": gmembers,
                 "shared_concept": group.get("shared_concept", ""),
                 "shared_interface": group.get("shared_interface", []),
                 "key_variations": group.get("key_variations", []),
+                "units": units_for_group,
             })
             kept |= set(gmembers)
         dropped = [m for m in members if m not in kept]
         if dropped:
             rationale.append(f"{candidate_id}: dropped {sorted(dropped)} -> noise")
             noise.extend(dropped)
-    noise = sorted(set(noise) | (set(all_files) - {m for c in clusters for m in c["members"]}))
+        status(
+            f"signal cluster {cluster_id}: gate candidate "
+            f"{index + 1}/{total_candidates} done ({len(groups)} groups)"
+        )
+    covered = {member for cluster_item in clusters for member in cluster_item["members"]}
+    noise = sorted(set(all_files) - covered)
     final = {"clusters": clusters, "noise": noise, "rationale": "\n".join(rationale)}
     write_json(out_dir / "gate_summary.json", {"n_accepted": len(clusters), "rationale": rationale})
     return final

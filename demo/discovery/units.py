@@ -1,4 +1,10 @@
-"""Code-unit extraction (top-level functions / classes / module) from Python sources."""
+"""Code-unit extraction from Python sources.
+
+Top-level functions/classes remain units, and class methods are also exposed as
+``method:Class.method`` units.  Method-level units matter for normal adapter
+code: two backend classes can share a small compatibility method without being
+near-duplicate classes.
+"""
 from __future__ import annotations
 
 import ast
@@ -30,8 +36,20 @@ def parse_units(source: str) -> tuple[Any | None, list[Unit], str | None]:
     body_span: list[tuple[int, int]] = []
     for node in tree.body:
         if isinstance(node, CONTAINER_TYPES):
-            units.append(Unit(unit_id=f"{node.__class__.__name__.lower()}:{node.name}", kind="function" if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else "class", start=node.lineno, end=node.end_lineno or node.lineno))
+            kind = "function" if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else "class"
+            units.append(Unit(unit_id=f"{kind}:{node.name}", kind=kind, start=node.lineno, end=node.end_lineno or node.lineno))
             body_span.append((node.lineno, node.end_lineno or node.lineno))
+            if isinstance(node, ast.ClassDef):
+                for child in node.body:
+                    if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        units.append(
+                            Unit(
+                                unit_id=f"method:{node.name}.{child.name}",
+                                kind="method",
+                                start=child.lineno,
+                                end=child.end_lineno or child.lineno,
+                            )
+                        )
     # module span: complement rows are handled by container_of_row; module unit only
     # needs to exist for lookup fallback, its span is the whole file.
     last_line = source.count("\n") + 1
@@ -52,6 +70,18 @@ def container_of_row(units: list[Unit], row: int) -> Unit:
 def top_level_containers(tree: Any) -> list[ast.AST]:
     """Body statements of the module that are themselves container definitions."""
     return [node for node in tree.body if isinstance(node, CONTAINER_TYPES)]
+
+
+def method_containers(tree: Any) -> list[tuple[str, ast.AST]]:
+    """Return direct class methods with stable qualified unit names."""
+    methods: list[tuple[str, ast.AST]] = []
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for child in node.body:
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                methods.append((f"method:{node.name}.{child.name}", child))
+    return methods
 
 
 def module_body(tree: Any) -> list[ast.AST]:

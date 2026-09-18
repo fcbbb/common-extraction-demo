@@ -20,12 +20,19 @@ For every candidate return exactly one object in the same order. Each object:
 
 Rules:
 - A candidate is a mechanically-grouped set of files that MAY contain one shared
-  component, several distinct ones, or none. Return one group per genuinely
-  extractable component you find (usually 0 or 1).
+  component, several distinct components, a shared framework abstraction, or none.
+  Use baseline discovery's broad notion of reusable algorithmic behavior; literal
+  duplication is not required when files implement the same coherent protocol or
+  abstraction with meaningful variations.
+- Always inspect subsets. If a candidate is mixed, split it and return every valid
+  subgroup instead of rejecting the whole candidate. A group may contain only a
+  subset of the candidate's members.
+- Return one group per reusable behavior/component you find (usually 0 or 1).
 - members of each group must be a non-empty subset of the candidate's listed
   members with at least 2 files; groups must be disjoint; every file not listed
   in any group is treated as noise.
-- Reject (empty groups) when the overlap is only generic I/O boilerplate or
-  trivial glue that does not warrant a common.py extraction.
+- Reject (empty groups) only when the overlap is merely generic I/O boilerplate,
+  imports, method signatures, comments, logging, or trivial glue without shared
+  algorithmic behavior or a reusable framework abstraction.
 - The files within one candidate are listed in the "files" array; use those ids.
 - Output valid JSON only. Do not wrap it in markdown.

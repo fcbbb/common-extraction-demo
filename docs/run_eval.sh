@@ -19,7 +19,7 @@ set -Eeuo pipefail
 
 PROJECT_DIR="/home/xiaoheng/demo_common_extraction"
 CONDA_ENV="${CONDA_ENV:-qwen-gguf}"
-DATASET="${DATASET:-codecontest}"         # codecontest (default) or complex (Scrapy slice)
+DATASET="${DATASET:-codecontest}"         # codecontest, complex, or django_storages
 BASELINE="${BASELINE:-a}"                 # a, b, signal, or both (report.py 会合并 a/b/signal 三方法同表)
 CLUSTER_ID="${CLUSTER_ID:-all}"           # 0..9, or all
 RESULTS_SUFFIX="${RESULTS_SUFFIX:-}"       # optional result directory suffix, e.g. _edits
@@ -49,8 +49,14 @@ case "$DATASET" in
     RESULTS_DIR="$PROJECT_DIR/demo/results/complex${RESULTS_SUFFIX}"
     TEST_MODE=pytest
     ;;
+  django_storages)
+    MANIFEST="$PROJECT_DIR/demo/datasets/django_storages/cluster_manifest.json"
+    DATASET_DIR="$PROJECT_DIR/demo/datasets/django_storages"
+    RESULTS_DIR="$PROJECT_DIR/demo/results/django_storages${RESULTS_SUFFIX}"
+    TEST_MODE=pytest
+    ;;
   *)
-    echo "ERROR: unknown DATASET=$DATASET (expected codecontest or complex)" >&2
+    echo "ERROR: unknown DATASET=$DATASET (expected codecontest, complex, or django_storages)" >&2
     exit 2
     ;;
 esac
@@ -153,7 +159,7 @@ run_cmd python -u -m demo.eval.run_existing_metrics \
   --test-mode "$TEST_MODE"
 
 report_args=(--results-dir "$RESULTS_DIR" --out "$REPORT_OUT")
-if [[ -z "$RESULTS_SUFFIX" ]]; then
+if [[ -z "$RESULTS_SUFFIX" && "$DATASET" == "codecontest" ]]; then
   report_args=(
     --results-dir "$PROJECT_DIR/demo/results/codecontest"
     --results-dir "$PROJECT_DIR/demo/results/complex"

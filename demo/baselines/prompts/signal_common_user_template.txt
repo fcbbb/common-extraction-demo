@@ -1,0 +1,15 @@
+Write common.py for this signal-discovered subcluster.
+
+Input JSON:
+{payload}
+
+The subcluster.units field identifies the only file units that may contribute shared code. If only part of a function or class is shared, extract only that shared span and leave the rest for the member files.
+
+Return this JSON schema:
+{
+  "library": {
+    "path": "common.py",
+    "content": "..."
+  },
+  "rationale": "..."
+}

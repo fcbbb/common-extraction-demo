@@ -81,13 +81,25 @@ def call_discovery(client: DeepSeekClient, cluster: dict[str, Any], dataset_dir:
 def sanitize_subcluster(item: dict[str, Any], cluster_files: set[str], fallback_index: int) -> dict[str, Any]:
     sub_id = item.get("cluster_id") or f"sub_{fallback_index}"
     members = [member for member in item.get("members", []) if isinstance(member, str) and member in cluster_files]
-    return {
+    sanitized = {
         "cluster_id": str(sub_id),
         "members": sorted(dict.fromkeys(members)),
         "shared_concept": item.get("shared_concept", ""),
         "shared_interface": item.get("shared_interface", []),
         "key_variations": item.get("key_variations", []),
     }
+    if "units" in item and isinstance(item["units"], dict):
+        sanitized["units"] = {
+            file_id: sorted({unit_id for unit_id in unit_ids if isinstance(unit_id, str)})
+            for file_id, unit_ids in item["units"].items()
+            if file_id in sanitized["members"] and isinstance(unit_ids, list)
+        }
+    return sanitized
+
+
+def _prompt_path(prompt_set: dict[str, Any] | None, key: str, default: Path) -> Path:
+    value = (prompt_set or {}).get(key, default)
+    return Path(value)
 
 
 def call_and_parse_stage(
@@ -145,10 +157,11 @@ def call_common(
     subcluster: dict[str, Any],
     raw_prefix: str = "",
     repair_context: str | None = None,
+    prompt_set: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     cluster_id = cluster["cluster_id"]
-    system_path = PROMPT_DIR / "baseline_b_common_system.txt"
-    user_path = PROMPT_DIR / "baseline_b_common_user_template.txt"
+    system_path = _prompt_path(prompt_set, "common_system", PROMPT_DIR / "baseline_b_common_system.txt")
+    user_path = _prompt_path(prompt_set, "common_user", PROMPT_DIR / "baseline_b_common_user_template.txt")
     payload = {
         "cluster_id": cluster_id,
         "subcluster": subcluster,
@@ -180,11 +193,12 @@ def call_member_refactors(
     library: dict[str, Any],
     raw_prefix: str = "",
     repair_context: str | None = None,
+    prompt_set: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One API call refactoring every member file of the subcluster."""
     cluster_id = cluster["cluster_id"]
-    system_path = PROMPT_DIR / "baseline_b_refactor_all_system.txt"
-    user_path = PROMPT_DIR / "baseline_b_refactor_all_user_template.txt"
+    system_path = _prompt_path(prompt_set, "refactor_system", PROMPT_DIR / "baseline_b_refactor_all_system.txt")
+    user_path = _prompt_path(prompt_set, "refactor_user", PROMPT_DIR / "baseline_b_refactor_all_user_template.txt")
     payload = {
         "cluster_id": cluster_id,
         "subcluster": subcluster,
@@ -217,6 +231,7 @@ def generate_member_refactor_extraction(
     library: dict[str, Any],
     raw_prefix: str = "",
     repair_context: str | None = None,
+    prompt_set: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     refactor_payload = call_member_refactors(
         client,
@@ -227,6 +242,7 @@ def generate_member_refactor_extraction(
         library,
         raw_prefix,
         repair_context,
+        prompt_set,
     )
     members = {
         item["file_id"]: {
@@ -261,6 +277,7 @@ def run_subcluster(
     resume: bool,
     rerun_metrics: bool,
     skip_metrics: bool,
+    prompt_set: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     cluster_id = cluster["cluster_id"]
     sub_id = subcluster["cluster_id"]
@@ -314,20 +331,26 @@ def run_subcluster(
     # library and call only the member-refactor stage.
     common_path = out_dir / "common.py"
     if resume and common_path.exists():
+        status(f"baseline_b cluster {cluster_id}/{sub_id}: reusing common.py")
         common_payload = {
             "library": {"path": "common.py", "content": common_path.read_text(encoding="utf-8")},
             "rationale": "reused fixed common.py from the previous member-refactor attempt",
         }
     else:
-        common_payload = call_common(client, cluster, dataset_dir, out_dir, subcluster)
+        status(f"baseline_b cluster {cluster_id}/{sub_id}: common extraction start")
+        common_payload = call_common(client, cluster, dataset_dir, out_dir, subcluster, prompt_set=prompt_set)
+        status(f"baseline_b cluster {cluster_id}/{sub_id}: common extraction done")
     library = common_payload["library"]
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "common.py").write_text(library["content"], encoding="utf-8")
     try:
+        status(f"baseline_b cluster {cluster_id}/{sub_id}: member refactor start")
         extraction = generate_member_refactor_extraction(
-            client, cluster, dataset_dir, out_dir, subcluster, library
+            client, cluster, dataset_dir, out_dir, subcluster, library, prompt_set=prompt_set
         )
+        status(f"baseline_b cluster {cluster_id}/{sub_id}: member refactor done")
     except ValueError as exc:
+        status(f"baseline_b cluster {cluster_id}/{sub_id}: member refactor retry after validation error")
         repair = (
             "The fixed common.py has been generated. Your member edit intents could not be applied or did not pass "
             "host validation. Return exactly one member entry per file with ordered exact original/replacement "
@@ -344,11 +367,19 @@ def run_subcluster(
             library,
             raw_prefix="refactor_retry_",
             repair_context=repair,
+            prompt_set=prompt_set,
         )
+        status(f"baseline_b cluster {cluster_id}/{sub_id}: member refactor retry done")
     extraction["rationale"] = common_payload.get("rationale", "")
     write_extraction_result(out_dir, extraction)
+    status(f"baseline_b cluster {cluster_id}/{sub_id}: compile start")
     compile_info = compile_result(out_dir)
+    status(
+        f"baseline_b cluster {cluster_id}/{sub_id}: compile "
+        f"{'passed' if compile_info['ok'] else 'failed'}"
+    )
     if not compile_info["ok"]:
+        status(f"baseline_b cluster {cluster_id}/{sub_id}: compile repair start")
         repair = (
             "The fixed common.py must remain unchanged. The host-generated member files failed parsing or compilation. "
             "Return corrected member edit intents only; do not regenerate common.py, return line numbers, diffs, or "
@@ -364,10 +395,17 @@ def run_subcluster(
             library,
             raw_prefix="compile_retry_",
             repair_context=repair,
+            prompt_set=prompt_set,
         )
         extraction["rationale"] = common_payload.get("rationale", "")
         write_extraction_result(out_dir, extraction)
         compile_info = compile_result(out_dir)
+        status(
+            f"baseline_b cluster {cluster_id}/{sub_id}: compile repair "
+            f"{'passed' if compile_info['ok'] else 'failed'}"
+        )
+    if compile_info["ok"] and not skip_metrics:
+        status(f"baseline_b cluster {cluster_id}/{sub_id}: pytest/metrics start")
     metrics = (
         run_metrics(
             cluster,
@@ -383,7 +421,10 @@ def run_subcluster(
         if compile_info["ok"] and not skip_metrics
         else None
     )
+    if metrics is not None:
+        status(f"baseline_b cluster {cluster_id}/{sub_id}: pytest/metrics done")
     if metrics is not None and not behavior_tests_ok(metrics):
+        status(f"baseline_b cluster {cluster_id}/{sub_id}: test repair start")
         repair = (
             "The fixed common.py must remain unchanged. Host behavior tests did not all pass for the generated member "
             "files. Return corrected member edit intents only; do not regenerate common.py, return line numbers, diffs, "
@@ -399,6 +440,7 @@ def run_subcluster(
             library,
             raw_prefix="test_retry_",
             repair_context=repair,
+            prompt_set=prompt_set,
         )
         extraction["rationale"] = common_payload.get("rationale", "")
         write_extraction_result(out_dir, extraction)
@@ -417,6 +459,10 @@ def run_subcluster(
             )
             if compile_info["ok"]
             else None
+        )
+        status(
+            f"baseline_b cluster {cluster_id}/{sub_id}: test repair "
+            f"{'passed' if metrics is not None and behavior_tests_ok(metrics) else 'still failing'}"
         )
     tests_ok = behavior_tests_ok(metrics)
     return {

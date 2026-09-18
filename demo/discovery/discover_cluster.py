@@ -17,7 +17,13 @@ from pathlib import Path
 from typing import Any
 
 from demo.baselines.json_utils import require_discovery_schema
-from demo.baselines.runner_utils import load_json_if_exists, load_manifest, selected_clusters, write_json
+from demo.baselines.runner_utils import (
+    load_json_if_exists,
+    load_manifest,
+    selected_clusters,
+    status as log_status,
+    write_json,
+)
 
 from . import ast_signal, clone_signal, fusion, semantic_signal
 
@@ -43,11 +49,16 @@ def run_discovery(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Return (signal_evidences, evidence_audit). S3 cached unless force_semantic."""
     t0 = time.time()
+    log_status(f"signal cluster {cluster_id}: clone signal start")
     s1 = clone_signal.cluster_evidence(sources)
+    log_status(f"signal cluster {cluster_id}: clone signal done ({len(s1['pairs'])} pairs)")
+    log_status(f"signal cluster {cluster_id}: AST skeleton signal start")
     s2 = ast_signal.cluster_evidence(sources)
+    log_status(f"signal cluster {cluster_id}: AST skeleton signal done ({len(s2['pairs'])} pairs)")
     evidences = [s1, s2]
     semantic: dict[str, Any] = {}
     if not skip_semantic:
+        log_status(f"signal cluster {cluster_id}: semantic signal start")
         semantic = semantic_signal.cluster_evidence(
             sources,
             dataset_key=dataset_key,
@@ -56,6 +67,9 @@ def run_discovery(
             force=force_semantic,
         )
         evidences.append(semantic)
+        log_status(f"signal cluster {cluster_id}: semantic signal done ({len(semantic.get('pairs', []))} pairs)")
+    else:
+        log_status(f"signal cluster {cluster_id}: semantic signal skipped")
     audit = {
         "signal": "evidence",
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -93,8 +107,9 @@ def discover_cluster(
         candidates_doc = load_json_if_exists(out_dir / "discovery_candidates.json")
         print(f"signal cluster {cluster_id}: resume hit, reusing discovery_candidates.json", file=sys.stderr, flush=True)
     else:
+        log_status(f"signal cluster {cluster_id}: discovery signals start ({len(file_ids)} files)")
         evidences, audit = run_discovery(sources, cluster_id, dataset_dir.name, skip_semantic, embedding_model, force_semantic)
-        fused = fusion.fuse(evidences, file_ids, cfg=cfg)
+        fused = fusion.fuse_units(evidences, cfg=cfg)
         candidates_doc = {
             "cluster_id": cluster_id,
             "n_files": len(file_ids),
@@ -107,10 +122,19 @@ def discover_cluster(
         }
         write_json(out_dir / "discovery_candidates.json", candidates_doc)
         write_json(out_dir / "discovery_evidence.json", audit)
+        log_status(
+            f"signal cluster {cluster_id}: signals done; "
+            f"{candidates_doc['edges_kept']}/{candidates_doc['edges_total']} pair edges passed, "
+            f"{candidates_doc['n_candidates']} candidates"
+        )
     if resume and load_json_if_exists(out_dir / "discovery.json") is not None:
         final_doc = load_json_if_exists(out_dir / "discovery.json")
         print(f"signal cluster {cluster_id}: resume hit, reusing discovery.json", file=sys.stderr, flush=True)
     else:
+        log_status(
+            f"signal cluster {cluster_id}: gate start "
+            f"({candidates_doc['n_candidates']} candidates)"
+        )
         final_doc = gate.run_gate(cluster, sources, candidates_doc, out_dir, skip_gate=skip_gate, cfg=gate_cfg)
     if final_doc is None:
         status = {"signal": "signal", "cluster_id": cluster_id, "stage": "discovery", "status": "candidates_ready", "n_candidates": candidates_doc["n_candidates"]}
@@ -126,6 +150,10 @@ def discover_cluster(
             "valid_clusters": len(final_doc.get("clusters", [])),
             "noise_files": len(final_doc.get("noise", [])),
         }
+        log_status(
+            f"signal cluster {cluster_id}: gate done; "
+            f"{status['valid_clusters']} subclusters, {status['noise_files']} noise files"
+        )
     write_json(out_dir / "status.json", status)
     return status
 

@@ -1,9 +1,9 @@
 """S3 semantic-signal orchestrator: runs the embedding worker in a torch env.
 
 Main process (no torch) writes the file list to a temp json, spawns the worker
-subprocess (conda experiments env by default), reads the pairwise-cosine output,
-caches it under demo/discovery/cache/<dataset>/<model>_<cluster_id>.json, and
-re-exposes it in the same shape as clone/ast signals for fusion.
+subprocess (conda experiments env by default), reads the unit-pair cosine output,
+caches it under demo/discovery/cache/<dataset>/<model>_u_<cluster_id>.json, and
+re-exposes unit-level evidence for fusion.
 """
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def _interpreter() -> list[str]:
 
 def cache_path(dataset_key: str, cluster_id: str, model: str) -> str:
     safe = model.replace("/", "__")
-    return os.path.join(CACHE_ROOT, dataset_key, f"{safe}_{cluster_id}.json")
+    return os.path.join(CACHE_ROOT, dataset_key, f"{safe}_u_{cluster_id}.json")
 
 
 def cluster_evidence(
@@ -51,7 +51,7 @@ def cluster_evidence(
             data = json.load(fh)
         return _evidence(data)
     if not file_sources:
-        return _evidence({"pairs": [], "files": [], "model": model})
+        return _evidence({"pairs": [], "units": [], "model": model})
     with tempfile.TemporaryDirectory() as tmp:
         inp = os.path.join(tmp, "sources.json")
         outp = os.path.join(tmp, "out.json")
@@ -63,10 +63,10 @@ def cluster_evidence(
             proc = subprocess.run(cmd, cwd=REPO_ROOT, env=env, timeout=timeout_sec, capture_output=True, text=True)
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
             print(f"[semantic] worker spawn failed: {exc}", file=sys.stderr)
-            return _evidence({"pairs": [], "files": [], "model": model, "error": str(exc)})
+            return _evidence({"pairs": [], "units": [], "model": model, "error": str(exc)})
         if proc.returncode != 0:
             print(f"[semantic] worker failed rc={proc.returncode}: {proc.stderr[-2000:]}", file=sys.stderr)
-            return _evidence({"pairs": [], "files": [], "model": model, "error": proc.stderr[-500:]})
+            return _evidence({"pairs": [], "units": [], "model": model, "error": proc.stderr[-500:]})
         with open(outp) as fh:
             data = json.load(fh)
     os.makedirs(os.path.dirname(cache), exist_ok=True)
@@ -78,6 +78,19 @@ def cluster_evidence(
 def _evidence(data: dict[str, Any]) -> dict[str, Any]:
     pairs = []
     for p in data.get("pairs", []):
-        pairs.append({"file_a": p["file_a"], "file_b": p["file_b"], "cosine": p["cosine"]})
+        if not all(key in p for key in ("file_a", "unit_a", "file_b", "unit_b", "cosine")):
+            continue
+        pairs.append({
+            "file_a": p["file_a"],
+            "unit_a": p["unit_a"],
+            "file_b": p["file_b"],
+            "unit_b": p["unit_b"],
+            "cosine": p["cosine"],
+        })
     pairs.sort(key=lambda p: -p["cosine"])
-    return {"signal": "semantic", "model": data.get("model", ""), "pairs": pairs}
+    return {
+        "signal": "semantic",
+        "model": data.get("model", ""),
+        "units": data.get("units", []),
+        "pairs": pairs,
+    }
