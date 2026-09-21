@@ -63,6 +63,11 @@ docs/recompute_mdl.sh
 demo/scripts/recompute_mdl_b.py
 demo/scripts/recompute_tokens_mdl.py
 
+# Superseded internal planning documents. Public documentation lives in
+# README.md, demo/README.md, and docs/command.md.
+docs/baseline_plan.md
+docs/代码共性组件抽取Demo版技术方案.md
+
 # -----------------------------------------------------------------------------
 # Generated experiment artifacts
 # -----------------------------------------------------------------------------

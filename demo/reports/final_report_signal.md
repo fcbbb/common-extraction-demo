@@ -117,7 +117,7 @@ Signal 以局部候选为改写单元。未参与公共组件抽取的文件保�
 
 ## 6. 总结
 
-本次实验得到以下结论：
+实验结果支持以下结论：
 
 1. Signal 在 Apache Libcloud 真实生产代码上实现 9.88% 的完整池压缩率，显著高于 Baseline A 的 0.05%；
 2. Signal 在 CodeContests 上实现 5.13% 的完整池压缩率，高于 Baseline A 的 3.81%；
@@ -132,4 +132,3 @@ Signal 以局部候选为改写单元。未参与公共组件抽取的文件保�
 - [Libcloud 嵌入召回数据](../results/libcloud_loadbalancer_real/embedding_recall_summary.json)
 - [CodeContests 中文实验结果](../results/codecontest/EXPERIMENT_REPORT.md)
 - [CodeContests 结构化结果](../results/codecontest/full_recompute_summary.json)
-

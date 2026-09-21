@@ -1,4 +1,4 @@
-# 命令速查
+# 命令与参数参考
 
 所有命令均从仓库根目录运行。脚本会自动定位项目路径，不包含机器相关的绝对路径。
 
@@ -20,7 +20,7 @@ CodeContests 已随仓库提供。Libcloud 首次使用时执行：
 make prepare-libcloud
 ```
 
-也可使用已有的上游 checkout：
+已有的上游 checkout 可通过 `--upstream` 指定：
 
 ```bash
 python -m demo.prepare.prepare_dataset_libcloud_loadbalancer_real \
@@ -30,7 +30,7 @@ python -m demo.prepare.prepare_dataset_libcloud_loadbalancer_real \
 ## 抽取
 
 ```bash
-# CodeContests 单簇快速实验
+# CodeContests 单簇实验
 DATASET=codecontest METHOD=all CLUSTER_ID=0 bash docs/run_extract.sh
 
 # CodeContests 全量并行实验
@@ -43,7 +43,7 @@ DATASET=libcloud METHOD=all WORKERS=4 bash docs/run_extract.sh
 DATASET=codecontest METHOD=signal RESUME=1 bash docs/run_extract.sh
 ```
 
-抽取需要 `DEEPSEEK_API_KEY`。可将变量写入不会提交的 `.env`，或在当前 shell 中导出。
+抽取阶段需要 `DEEPSEEK_API_KEY`。该变量可配置在已被 Git 忽略的 `.env` 中，也可由进程环境提供。
 
 ## 评估
 
@@ -52,7 +52,7 @@ DATASET=codecontest METHOD=all bash docs/run_eval.sh
 DATASET=libcloud METHOD=all TEST_TIMEOUT_SEC=120 bash docs/run_eval.sh
 ```
 
-默认不计算 MDL。安装支持 logprob 的 `llama-cpp-python`、设置 `MODEL_PATH` 后，可用 `ENABLE_MDL=1` 开启。
+MDL 默认关闭。安装支持 logprob 的 `llama-cpp-python` 并设置 `MODEL_PATH` 后，可通过 `ENABLE_MDL=1` 启用。
 
 ## 参数
 
@@ -71,7 +71,7 @@ DATASET=libcloud METHOD=all TEST_TIMEOUT_SEC=120 bash docs/run_eval.sh
 | `TEST_WORKERS` | `16` | 测试并发数 |
 | `REPORT_OUT` | `demo/reports/report_<dataset>.md` | 明细报告输出路径 |
 
-## 仅运行某个阶段
+## 分阶段运行
 
 ```bash
 # 确定性发现，不使用语义模型和远端 API
@@ -95,7 +95,7 @@ python -m demo.eval.compare_codecontest_pool
 
 ## Slurm
 
-两个 shell 脚本保留标准 `#SBATCH` 资源声明，可直接提交：
+两个 shell 脚本包含标准 `#SBATCH` 资源声明，适用于 Slurm 提交：
 
 ```bash
 sbatch --export=ALL,DATASET=codecontest,METHOD=all docs/run_extract.sh
