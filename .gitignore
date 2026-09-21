@@ -87,3 +87,14 @@ demo/results/libcloud_loadbalancer_real/*
 # Keep one current human-facing report; older generated reports remain local.
 demo/reports/*
 !demo/reports/final_report_signal.md
+
+# -----------------------------------------------------------------------------
+# Local downstream-task data and notes
+# -----------------------------------------------------------------------------
+# Keep runner code visible; downloaded repositories, manifests, notes, and
+# local planning files stay in the workspace only.
+TODO.md
+demo/datasets/libcloud_dns_history/
+demo/datasets/libcloud_lxd_history/
+demo/downstream/tasks.json
+demo/downstream/*.md
