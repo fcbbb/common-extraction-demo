@@ -133,4 +133,3 @@ Signal 以局部候选为改写单元。未参与公共组件抽取的文件保�
 - [CodeContests 中文实验结果](../results/codecontest/EXPERIMENT_REPORT.md)
 - [CodeContests 结构化结果](../results/codecontest/full_recompute_summary.json)
 
-JSON 文件供复现实验脚本读取，因此保留稳定的英文键名；所有面向阅读者的 Markdown 报告均使用中文。
