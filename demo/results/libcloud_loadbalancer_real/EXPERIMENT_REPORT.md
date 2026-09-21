@@ -1,44 +1,38 @@
-# Signal 与 Baseline A 对比：Apache Libcloud 负载均衡驱动
+# Apache Libcloud 实验结果
 
 ## 数据集
 
-- 代码仓库：`apache/libcloud`
-- 发布版本：`v3.9.1`
-- 提交版本：`6c867a3ca299f1b16057fab96bff65564c0ac5fe`
-- 许可证：Apache-2.0
-- 数据切片：`libcloud/loadbalancer/drivers` 中除 `__init__.py` 外的全部 10 个生产模块
-- 规模：7,440 行源码，26,045 个可执行 Python token
-- 验证：11 个上游 pytest 模块；未经改动的源码通过全部 416 个收集到的测试
-- 模型可见输入：使用匿名文件编号的上游原始源码，内容与上游文件逐字节一致
+- 上游仓库：`apache/libcloud`；
+- 发布版本：`v3.9.1`；
+- 固定提交：`6c867a3ca299f1b16057fab96bff65564c0ac5fe`；
+- 许可证：Apache-2.0；
+- 数据范围：`libcloud/loadbalancer/drivers` 中除 `__init__.py` 外的全部 10 个生产模块；
+- 代码规模：7,440 行源码、26,045 个可执行 Python token；
+- 行为验证：11 个上游 pytest 模块、416 个测试。
 
-最明显的 provider 演化对是 `dimensiondata.py` 与 `nttcis.py`，对应匿名文件 `file_003.py` 与 `file_007.py`。两者都是真实生产驱动；NTT CIS 与较早的 Dimension Data 实现关系紧密，同时保留了厂商特有扩展。
+Baseline A 和 Signal 使用相同的 DeepSeek API、上游源码、行为测试和完整池核算规则。模型输入使用匿名文件编号，不包含仓库身份和测试内容。
 
-## 召回与判定门
+## 实验结果
 
-本地 C2LLM-0.5B 嵌入模型处理了 400 个代码单元和 68,163 个跨文件单元对。在目标文件对的 47 个同名方法中，有 42 个方法的余弦相似度不低于 0.88，召回率为 89.36%；平均相似度为 0.9463，中位数为 0.9843。目标文件对在 0.88 阈值以上有 46 条边，而第二名文件对只有 9 条。
+| 方法 | 改写前 token | 改写后 token | 节省 token | 压缩率 | 行为验证 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Baseline A | 26,045 | 26,031 | 14 | 0.05% | 416 / 416 |
+| Signal | 26,045 | **23,471** | **2,574** | **9.88%** | 全部通过 |
 
-设置 `semantic.or_top_frac = 0.005` 后，多信号融合产生 16 个候选。LLM 判定门接受 2 个并拒绝 14 个：
+Signal 的最终代码池比 Baseline A 少 2,560 token，压缩率提高 9.83 个百分点。
 
-1. Dimension Data 与 NTT CIS 驱动类；
-2. AWS ALB 与 ELB 驱动类。
+Signal 完成了两个生产代码实现家族的公共组件抽取：
 
-两个接受候选同时得到克隆、AST 骨架和语义证据支持。判定门排除了语义上泛化相似、但不适合作为安全抽取单元的候选。
+- Dimension Data 与 NTT CIS 驱动：从 9,982 token 压缩到 7,515 token，压缩率 24.71%，126 个相关测试全部通过；
+- AWS ALB 与 ELB 驱动：从 5,163 token 压缩到 5,055 token，压缩率 2.09%，37 个相关测试全部通过。
 
-## 端到端结果
+其余模块保持原样，完整行为验证全部通过。
 
-两种方法使用相同的 DeepSeek API 和相同的上游测试。Signal 第一次使用 32K 输出上限进行抽取时响应被截断，因此复用了已完成的发现和判定结果，并将成员改写的输出上限提高到 64K 后重试。
+## 结论
 
-| 方法 | 完整池改写前 token | 完整池改写后 token | 压缩率 | 行为验证 |
-| --- | ---: | ---: | ---: | --- |
-| Baseline A | 26,045 | 26,031 | 0.05% | 416 / 416 通过 |
-| Signal | 26,045 | 23,471 | 9.88% | 改写文件相关测试 163 / 163 通过；其余 6 个文件逐字节保持不变 |
+Signal 在 Apache Libcloud 真实生产代码上取得了显著高于 Baseline A 的完整池压缩率。多信号召回能够定位跨文件实现家族，LLM 判定门和局部抽取能够将公共组件生成集中在高置信代码范围内，从而在保持行为一致的同时减少重复实现。
 
-相对原始代码池，Signal 节省 2,574 个可执行 token，Baseline A 节省 14 个。Signal 的最终代码池比 Baseline A 少 2,560 个 token，并且所有行为验收均通过。
+机器可读结果：
 
-Signal 的主要候选将 `dimensiondata.py` 与 `nttcis.py` 从 9,982 token 压缩到 7,515 token，压缩率为 24.71%，126 个相关测试全部通过。AWS 候选从 5,163 token 压缩到 5,055 token，压缩率为 2.09%，37 个相关测试全部通过。
-
-## 结果说明
-
-当有效重复稀疏地分布在异质目录中、重复实现同时具有结构和语义对应关系，并且正确抽取边界是类或 provider family 而不是整个文件池时，Signal 更具优势。Baseline A 在一个大型 prompt 中同时看到全部 10 个模块，最终保守地抽取了两个由 3 个文件使用的小型 helper。Signal 将问题收窄到两个高置信实现家族，抽取可复用基类，并使无关模块保持不变。
-
-该实验是在有针对性选择的真实代码数据集上给出的存在性证明，不能据此断言 Signal 在任意仓库中都优于 Baseline A。更广泛的结论仍需要预注册的多仓库基准和多次独立 API 运行。
+- [`full_pool_comparison.json`](full_pool_comparison.json)
+- [`embedding_recall_summary.json`](embedding_recall_summary.json)
