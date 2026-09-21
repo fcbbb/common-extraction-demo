@@ -31,6 +31,7 @@ from demo.baselines.runner_utils import (
     validate_common_usage,
     write_extraction_result,
     write_json,
+    validate_unit_scoped_edits,
 )
 
 
@@ -94,6 +95,8 @@ def sanitize_subcluster(item: dict[str, Any], cluster_files: set[str], fallback_
             for file_id, unit_ids in item["units"].items()
             if file_id in sanitized["members"] and isinstance(unit_ids, list)
         }
+    if "screening" in item and isinstance(item["screening"], dict):
+        sanitized["screening"] = item["screening"]
     return sanitized
 
 
@@ -259,6 +262,8 @@ def generate_member_refactor_extraction(
         {"library": library, "members": members, "rationale": ""},
         original_files,
     )
+    if (prompt_set or {}).get("unit_scoped"):
+        validate_unit_scoped_edits(extraction, original_files, subcluster)
     validate_common_usage(extraction, original_files)
     return extraction
 
@@ -278,12 +283,13 @@ def run_subcluster(
     rerun_metrics: bool,
     skip_metrics: bool,
     prompt_set: dict[str, Any] | None = None,
+    force_extraction: bool = False,
 ) -> dict[str, Any]:
     cluster_id = cluster["cluster_id"]
     sub_id = subcluster["cluster_id"]
     out_dir = cluster_out_dir / sub_id
     previous = load_json_if_exists(out_dir / "status.json")
-    if resume and previous and previous.get("status") == "ok":
+    if resume and not force_extraction and previous and previous.get("status") == "ok":
         if not rerun_metrics or skip_metrics:
             print(
                 f"baseline_b cluster {cluster_id}/{sub_id}: resume hit, skipping extraction and metrics",
@@ -330,7 +336,7 @@ def run_subcluster(
     # Generate common.py exactly once. All member-refactor retries below reuse this
     # library and call only the member-refactor stage.
     common_path = out_dir / "common.py"
-    if resume and common_path.exists():
+    if resume and not force_extraction and common_path.exists():
         status(f"baseline_b cluster {cluster_id}/{sub_id}: reusing common.py")
         common_payload = {
             "library": {"path": "common.py", "content": common_path.read_text(encoding="utf-8")},
@@ -584,7 +590,7 @@ def main() -> None:
     parser.add_argument("--timeout-sec", type=float, default=5.0)
     parser.add_argument("--api-timeout-sec", type=float, default=None, help="Optional API request timeout")
     parser.add_argument("--max-output-tokens", type=int, default=None, help="Optional client-side output token limit")
-    parser.add_argument("--test-mode", choices=["stdio", "pytest"], default="stdio", help="pytest for the dataset_complex Scrapy slice.")
+    parser.add_argument("--test-mode", choices=["stdio", "pytest"], default="stdio", help="Use pytest for package-backed real-code datasets.")
     parser.add_argument("--test-limit", type=int, default=0, help="Per-file test limit. Use 0 for all tests.")
     parser.add_argument("--compare-mode", choices=["expected", "original"], default="original")
     parser.add_argument("--normalize", choices=["strip", "whitespace"], default="whitespace")

@@ -43,6 +43,10 @@ def original_test_passed(test: dict[str, Any], run: dict[str, Any], normalize: s
 
 
 def run_python_file(path: Path, stdin: str, timeout_sec: float) -> dict[str, Any]:
+    # ``cwd`` is intentionally the script directory so local imports keep
+    # working.  Resolve first: a dataset supplied as a relative CLI path would
+    # otherwise be interpreted relative to that new cwd a second time.
+    path = path.resolve()
     proc = subprocess.run(
         [sys.executable, str(path)],
         input=stdin,

@@ -22,6 +22,7 @@ from demo.eval.measure_mdl import measure_mdl
 from demo.eval.measure_tokens import measure as measure_tokens
 from demo.eval.run_tests import test_refactored_cluster
 from demo.eval.run_tests_pytest import test_refactored_cluster as test_refactored_cluster_pytest
+from demo.discovery.units import parse_units
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -198,6 +199,122 @@ def _apply_edit_intents(source: str, edits: list[dict[str, Any]], file_id: str) 
         position = code_positions[0]
         result = result[:position] + replacement + result[position + len(original):]
     return result
+
+
+def _fragment_line_span(source: str, fragment: str) -> tuple[int, int]:
+    """Return the 1-based inclusive line span of a unique source fragment."""
+    positions, _ = _code_occurrences(source, fragment)
+    if len(positions) != 1:
+        raise ValueError(f"edit fragment has {len(positions)} code occurrences; expected exactly one")
+    start_offset = positions[0]
+    end_offset = start_offset + len(fragment)
+    start_line = source.count("\n", 0, start_offset) + 1
+    end_line = source.count("\n", 0, max(start_offset, end_offset - 1)) + 1
+    return start_line, end_line
+
+
+def _is_import_edit(original: str, replacement: str) -> bool:
+    """Allow the module-level import shim required by a unit-scoped refactor."""
+    lines = [line.strip() for line in replacement.splitlines() if line.strip()]
+    return bool(lines) and all(line.startswith("import ") or line.startswith("from ") for line in lines)
+
+
+def validate_unit_scoped_edits(
+    payload: dict[str, Any],
+    original_files: dict[str, str],
+    subcluster: dict[str, Any],
+) -> None:
+    """Reject Signal edits that escape their declared AST unit.
+
+    File reuse across subclusters is allowed.  The boundary enforced here is
+    the declared unit span; a later cluster-level audit checks those spans for
+    overlap across subclusters.
+    """
+    units_by_file = subcluster.get("units") or {}
+    for file_id, source in original_files.items():
+        _, parsed_units, error = parse_units(source)
+        if error:
+            raise ValueError(f"{file_id} cannot validate Signal unit scope: {error}")
+        declared = set(units_by_file.get(file_id, []))
+        if not declared:
+            if payload["members"][file_id].get("edits"):
+                raise ValueError(f"{file_id} has edits but no declared Signal units")
+            continue
+        ranges = [(unit.start, unit.end) for unit in parsed_units if unit.unit_id in declared]
+        known = {unit.unit_id for unit in parsed_units}
+        unknown = sorted(declared - known)
+        if unknown:
+            raise ValueError(f"{file_id} declares unknown Signal units: {unknown}")
+        for edit_index, edit in enumerate(payload["members"][file_id].get("edits", []), 1):
+            if _is_import_edit(edit["original"], edit["replacement"]):
+                continue
+            start, end = _fragment_line_span(source, edit["original"])
+            if not any(start >= unit_start and end <= unit_end for unit_start, unit_end in ranges):
+                raise ValueError(
+                    f"{file_id} edit {edit_index} spans lines {start}-{end} outside declared Signal units "
+                    f"{sorted(declared)}"
+                )
+
+
+def audit_signal_edit_scopes(
+    dataset_dir: Path,
+    cluster: dict[str, Any],
+    cluster_out_dir: Path,
+    subclusters: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Audit actual Signal edit spans across subclusters.
+
+    The same file may be present in multiple subclusters.  Two edits conflict
+    only when their source line intervals overlap; file membership alone is
+    deliberately not treated as a conflict.
+    """
+    original_files = {
+        item["file_id"]: (dataset_dir / "clusters" / cluster["cluster_id"] / "original" / item["file_id"]).read_text(
+            encoding="utf-8"
+        )
+        for item in cluster["files"]
+    }
+    spans_by_file: dict[str, list[dict[str, Any]]] = {}
+    errors: list[str] = []
+    for subcluster in subclusters:
+        sub_id = subcluster["cluster_id"]
+        raw = load_json_if_exists(cluster_out_dir / sub_id / "raw_output.json")
+        if not raw:
+            continue
+        for file_id, member in (raw.get("members") or {}).items():
+            source = original_files.get(file_id)
+            if source is None:
+                errors.append(f"{sub_id}/{file_id}: not in cluster originals")
+                continue
+            for edit_index, edit in enumerate(member.get("edits", []), 1):
+                try:
+                    start, end = _fragment_line_span(source, edit["original"])
+                except ValueError as exc:
+                    errors.append(f"{sub_id}/{file_id}/edit_{edit_index}: {exc}")
+                    continue
+                spans_by_file.setdefault(file_id, []).append(
+                    {
+                        "subcluster_id": sub_id,
+                        "edit_index": edit_index,
+                        "start": start,
+                        "end": end,
+                    }
+                )
+
+    conflicts: list[dict[str, Any]] = []
+    for file_id, spans in spans_by_file.items():
+        for index, left in enumerate(spans):
+            for right in spans[index + 1 :]:
+                if left["subcluster_id"] == right["subcluster_id"]:
+                    continue
+                if left["start"] <= right["end"] and right["start"] <= left["end"]:
+                    conflicts.append({"file_id": file_id, "left": left, "right": right})
+    return {
+        "ok": not errors and not conflicts,
+        "errors": errors,
+        "conflicts": conflicts,
+        "spans": spans_by_file,
+    }
 
 
 def _generate_unified_diff(original: str, final: str, file_id: str) -> str:

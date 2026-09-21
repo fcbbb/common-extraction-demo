@@ -6,6 +6,8 @@ Per candidate, emit one group per coherent reusable component or behavior family
 - A group is valid when its files share substantial algorithmic behavior, a lifecycle protocol, a framework abstraction, or a reusable implementation pattern that can be factored or centralized by one common interface. Literal duplicate helper bodies are not required.
 - Do not reject an entire mixed candidate. Inspect subsets and actively salvage every valid subgroup with at least 2 members; unrelated members should be dropped.
 - Reject only overlap that is merely generic boilerplate (imports, method names/signatures, standard framework setup, comments, logging, or trivial glue) without meaningful shared behavior.
+- Also reject a group when the concrete reusable implementation is too small to offset one shared definition plus the import/call-site edits needed in every member file. A semantic resemblance by itself is not sufficient for extraction.
+- Prefer an empty group when the expected token saving is non-positive, when only a few statements or tokens are shared, or when the members would need mostly file-specific adapters rather than one common implementation.
 - Never add files not listed in the candidate. For each group name the shared concept/interface and summarize the cross-file variations in key_variations.
 
 Constraints:

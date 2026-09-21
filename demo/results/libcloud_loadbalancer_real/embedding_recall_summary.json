@@ -1,0 +1,23 @@
+{
+  "model": "codefuse-ai/C2LLM-0.5B",
+  "units": 400,
+  "cross_file_pairs": 68163,
+  "target_pair": [
+    "file_003.py",
+    "file_007.py"
+  ],
+  "same_named_methods": 47,
+  "same_named_methods_cosine_ge_0_88": 42,
+  "recall_at_0_88": 0.8936170212765957,
+  "mean_cosine": 0.9463404255319149,
+  "median_cosine": 0.9843,
+  "max_rank_fraction": 0.048472044951073164,
+  "target_edges_ge_0_88": 46,
+  "runner_up": {
+    "files": [
+      "file_004.py",
+      "file_009.py"
+    ],
+    "edges_ge_0_88": 9
+  }
+}

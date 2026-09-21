@@ -1,0 +1,181 @@
+{
+  "dataset": {
+    "name": "CodeContests",
+    "classification": "controlled/artificial competitive-programming benchmark",
+    "clusters": 10,
+    "files": 300,
+    "candidate_tests": 29966,
+    "difficulty_min": 7,
+    "difficulty_max": 22
+  },
+  "configuration": {
+    "semantic_top_frac": 0.005,
+    "baseline_a_workers": 4,
+    "signal_gate_workers": 4,
+    "signal_extraction_workers": 4,
+    "test_timeout_seconds": 10,
+    "max_output_tokens": 65536
+  },
+  "baseline_a_full_pool": {
+    "cluster_status_counts": {
+      "ok": 9,
+      "tests_failed": 1
+    },
+    "eligible_tests": 24897,
+    "passed_tests": 24896,
+    "test_pass_rate": 0.999959834518215,
+    "tokens_before": 121644,
+    "tokens_after": 116417,
+    "token_saving": 5227,
+    "token_compression": 0.04296964914011381
+  },
+  "baseline_a_accepted_full_pool": {
+    "selection_rule": "Accept only status=ok, positive-saving cluster outputs; rejected clusters remain unchanged.",
+    "accepted_clusters": 9,
+    "eligible_tests": 24897,
+    "passed_tests": 24897,
+    "test_pass_rate": 1.0,
+    "tokens_before": 121644,
+    "tokens_after": 117004,
+    "token_saving": 4640,
+    "token_compression": 0.038144092598073054
+  },
+  "signal_independent_candidates": {
+    "candidate_status_counts": {
+      "ok": 71,
+      "tests_failed": 1
+    },
+    "candidate_count": 72,
+    "valid_candidate_count": 71,
+    "eligible_tests_for_valid_candidates": 17098,
+    "passed_tests_for_valid_candidates": 17098,
+    "test_pass_rate_for_valid_candidates": 1.0,
+    "tokens_before_with_repeated_members": 260467,
+    "tokens_after_with_repeated_members": 251809,
+    "token_compression_with_repeated_members": 0.03324029531572137,
+    "positive_saving_candidates": 58,
+    "zero_saving_candidates": 1,
+    "negative_saving_candidates": 12,
+    "comparability_note": "Independent candidates can repeat source files and therefore are not directly comparable with Baseline A's one-pass full-pool total."
+  },
+  "signal_disjoint_full_pool_projection": {
+    "selection_rule": "Exact maximum token saving among status=ok, positive-saving subclusters, with each source file selected at most once; unselected files remain unchanged.",
+    "selected_subclusters": 29,
+    "selected_by_cluster": [
+      {
+        "cluster_id": "0",
+        "selected_subclusters": [
+          "sub_0",
+          "sub_1"
+        ],
+        "selected_count": 2,
+        "token_saving": 254
+      },
+      {
+        "cluster_id": "1",
+        "selected_subclusters": [
+          "sub_0",
+          "sub_1",
+          "sub_2"
+        ],
+        "selected_count": 3,
+        "token_saving": 487
+      },
+      {
+        "cluster_id": "2",
+        "selected_subclusters": [
+          "sub_0",
+          "sub_2"
+        ],
+        "selected_count": 2,
+        "token_saving": 117
+      },
+      {
+        "cluster_id": "3",
+        "selected_subclusters": [
+          "sub_0",
+          "sub_4"
+        ],
+        "selected_count": 2,
+        "token_saving": 902
+      },
+      {
+        "cluster_id": "4",
+        "selected_subclusters": [
+          "sub_0",
+          "sub_1",
+          "sub_2",
+          "sub_3",
+          "sub_5"
+        ],
+        "selected_count": 5,
+        "token_saving": 1321
+      },
+      {
+        "cluster_id": "5",
+        "selected_subclusters": [
+          "sub_0",
+          "sub_2",
+          "sub_3"
+        ],
+        "selected_count": 3,
+        "token_saving": 885
+      },
+      {
+        "cluster_id": "6",
+        "selected_subclusters": [
+          "sub_1",
+          "sub_3"
+        ],
+        "selected_count": 2,
+        "token_saving": 78
+      },
+      {
+        "cluster_id": "7",
+        "selected_subclusters": [
+          "sub_1",
+          "sub_3",
+          "sub_4"
+        ],
+        "selected_count": 3,
+        "token_saving": 591
+      },
+      {
+        "cluster_id": "8",
+        "selected_subclusters": [
+          "sub_1",
+          "sub_5",
+          "sub_24",
+          "sub_26"
+        ],
+        "selected_count": 4,
+        "token_saving": 911
+      },
+      {
+        "cluster_id": "9",
+        "selected_subclusters": [
+          "sub_1",
+          "sub_4",
+          "sub_7"
+        ],
+        "selected_count": 3,
+        "token_saving": 699
+      }
+    ],
+    "eligible_tests_passed_for_selected_subclusters": true,
+    "eligible_tests": 24897,
+    "passed_tests": 24897,
+    "test_pass_rate": 1.0,
+    "tokens_before": 121644,
+    "tokens_after": 115399,
+    "token_saving": 6245,
+    "token_compression": 0.05133833152477718,
+    "composition_caveat": "This is conservative token accounting, not a materialized combined tree. Each selected artifact currently has its own common.py and would need namespacing or composition before joint deployment."
+  },
+  "comparison": {
+    "signal_better_by_tokens": 1605,
+    "signal_better_by_compression_points": 0.013194238926704127,
+    "strict_behavior_note": "Baseline A has one refactored-test timeout. The selected Signal projection excludes the one failing Signal candidate and all selected candidates pass their eligible tests."
+  },
+  "evaluation_scope": "Pass rates use only tests on which the original program produced the expected output. Token counts exclude comments and docstrings."
+}

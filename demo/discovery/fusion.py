@@ -12,6 +12,8 @@ import copy
 from collections import defaultdict
 from typing import Any
 
+from .units import unit_is_ancestor
+
 # Frozen defaults (calibrated on codecontest clusters 0/1 vs baseline_b discovery:
 # clone/skeleton bars set just above the I/O-idiom noise pairs, semantic bar just
 # under the strongest concept-family pairs; both flat in the swept neighborhood).
@@ -21,6 +23,9 @@ DEFAULT_CFG = {
     "semantic": {"min_cosine": 0.88, "or_top_frac": 0.06},
     "top_neighbors": 2,
     "max_cluster": 6,
+    # "leaf" keeps the historical method-first behavior.  "coarse" prefers
+    # a class unit when both a class and one of its methods are candidates.
+    "unit_preference": "coarse",
 }
 
 
@@ -242,6 +247,83 @@ def _unit_record(signal: str, record: dict[str, Any], file_a: str | None = None,
     }
 
 
+def _remove_nested_candidate_units(
+    candidates: list[dict[str, Any]],
+    unit_preference: str = "leaf",
+) -> list[dict[str, Any]]:
+    """Resolve nested candidate scopes without making files exclusive.
+
+    Historical ``leaf`` mode removes an ancestor whenever a descendant is
+    present anywhere in the candidate set.  ``coarse`` mode does the reverse
+    for class/method pairs, retaining the class envelope and removing the
+    method candidate.  Module units are intentionally excluded from the
+    coarse preference because they represent the non-container module body,
+    not the whole file.
+    """
+    occurrences: list[tuple[int, str, str]] = []
+    for index, candidate in enumerate(candidates):
+        for unit in candidate.get("units", []):
+            file_id = unit.get("file_id")
+            unit_id = unit.get("unit_id")
+            if isinstance(file_id, str) and isinstance(unit_id, str):
+                occurrences.append((index, file_id, unit_id))
+
+    normalized: list[dict[str, Any]] = []
+    for index, candidate in enumerate(candidates):
+        kept_units = []
+        for unit in candidate.get("units", []):
+            file_id = unit.get("file_id")
+            unit_id = unit.get("unit_id")
+            if not isinstance(file_id, str) or not isinstance(unit_id, str):
+                continue
+            if unit_preference == "coarse":
+                if unit_id.startswith("method:"):
+                    has_class_ancestor = any(
+                        other_file == file_id
+                        and (other_index != index or other_unit_id != unit_id)
+                        and other_unit_id.startswith("class:")
+                        and unit_is_ancestor(other_unit_id, unit_id)
+                        for other_index, other_file, other_unit_id in occurrences
+                    )
+                    if has_class_ancestor:
+                        continue
+            else:
+                has_descendant = any(
+                    other_file == file_id
+                    and (other_index != index or other_unit_id != unit_id)
+                    and unit_is_ancestor(unit_id, other_unit_id)
+                    for other_index, other_file, other_unit_id in occurrences
+                )
+                if has_descendant:
+                    continue
+            if unit_preference in {"leaf", "coarse"}:
+                kept_units.append(unit)
+            else:
+                raise ValueError(f"Unsupported unit_preference: {unit_preference!r}")
+
+        members = sorted({unit["file_id"] for unit in kept_units})
+        if len(members) < 2:
+            continue
+        item = dict(candidate)
+        item["members"] = members
+        item["n_members"] = len(members)
+        item["units"] = kept_units
+        allowed = {(unit["file_id"], unit["unit_id"]) for unit in kept_units}
+        evidence = {}
+        for signal, records in (candidate.get("evidence") or {}).items():
+            filtered = []
+            for record in records:
+                a = (record.get("file_a"), record.get("unit_a"))
+                b = (record.get("file_b"), record.get("unit_b"))
+                if a in allowed and b in allowed:
+                    filtered.append(record)
+            if filtered:
+                evidence[signal] = filtered
+        item["evidence"] = evidence
+        normalized.append(item)
+    return normalized
+
+
 def fuse_units(signal_evidences: list[dict[str, Any]], cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     """Fuse signal evidence on ``(file_id, unit_id)`` vertices.
 
@@ -334,7 +416,6 @@ def fuse_units(signal_evidences: list[dict[str, Any]], cfg: dict[str, Any] | Non
         edge["strength"] for edge in edges if edge["a"] in component and edge["b"] in component
     ))
     candidates: list[dict[str, Any]] = []
-    assigned_files: set[str] = set()
     for component in components:
         members = sorted({file_id for file_id, _ in component})
         component_edges = [edge for edge in edges if edge["a"] in component and edge["b"] in component]
@@ -361,7 +442,8 @@ def fuse_units(signal_evidences: list[dict[str, Any]], cfg: dict[str, Any] | Non
             "evidence": dict(shared),
             "gain": sum(edge["tokens"] for edge in component_edges),
         })
-        assigned_files.update(members)
+    candidates = _remove_nested_candidate_units(candidates, cfg.get("unit_preference", "leaf"))
+    assigned_files = {member for candidate in candidates for member in candidate["members"]}
     file_ids = sorted({file_id for file_id, _ in nodes})
     return {
         "candidates": candidates,

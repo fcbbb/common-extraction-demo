@@ -1,7 +1,7 @@
 """S3 semantic-signal orchestrator: runs the embedding worker in a torch env.
 
 Main process (no torch) writes the file list to a temp json, spawns the worker
-subprocess (conda experiments env by default), reads the unit-pair cosine output,
+subprocess, reads the unit-pair cosine output,
 caches it under demo/discovery/cache/<dataset>/<model>_u_<cluster_id>.json, and
 re-exposes unit-level evidence for fusion.
 """
@@ -24,7 +24,10 @@ def _interpreter() -> list[str]:
     direct = os.environ.get("DEMO_EMBED_PYTHON")
     if direct:
         return [direct]
-    return ["conda", "run", "-n", "experiments", "--no-capture-output", "python"]
+    conda_env = os.environ.get("DEMO_EMBED_ENV")
+    if conda_env:
+        return ["conda", "run", "-n", conda_env, "--no-capture-output", "python"]
+    return [sys.executable]
 
 
 def cache_path(dataset_key: str, cluster_id: str, model: str) -> str:

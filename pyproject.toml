@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "common-extraction-demo"
+version = "0.1.0"
+description = "Evidence-guided common-component extraction research demo"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy>=2.2,<3"]
+
+[project.optional-dependencies]
+embedding = ["sentence-transformers>=5.4,<6"]
+real-code = ["apache-libcloud==3.9.1", "requests>=2.32,<3"]
+test = ["pytest>=9,<10"]
+
+[tool.setuptools.packages.find]
+include = ["demo*"]
+exclude = ["demo.datasets*", "demo.results*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

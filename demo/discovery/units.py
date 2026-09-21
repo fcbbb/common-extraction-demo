@@ -87,3 +87,25 @@ def method_containers(tree: Any) -> list[tuple[str, ast.AST]]:
 def module_body(tree: Any) -> list[ast.AST]:
     """Top-level statements that belong to the module unit (not nested in containers)."""
     return [node for node in tree.body if not isinstance(node, CONTAINER_TYPES)]
+
+
+def unit_is_ancestor(parent_id: str, child_id: str) -> bool:
+    """Return whether one stable unit id contains another unit id.
+
+    Discovery works with both classes and their direct methods.  Those are not
+    independent edit scopes: a class span contains every method span inside it.
+    Keeping this relationship explicit lets the signal pipeline prefer leaf
+    units while still allowing the same file in multiple disjoint subclusters.
+    """
+    if parent_id == child_id:
+        return False
+    if parent_id == "module":
+        return child_id != "module"
+    if parent_id.startswith("class:") and child_id.startswith("method:"):
+        class_name = parent_id.split(":", 1)[1]
+        return child_id.startswith(f"method:{class_name}.")
+    return False
+
+
+def unit_is_ancestor_or_equal(first_id: str, second_id: str) -> bool:
+    return first_id == second_id or unit_is_ancestor(first_id, second_id)

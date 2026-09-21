@@ -37,6 +37,45 @@ def calls_in_tree(tree: ast.AST) -> set[str]:
     return calls
 
 
+def common_references_in_tree(tree: ast.AST, apis: set[str]) -> set[str]:
+    """Return common.py APIs referenced by imports, calls, or inheritance.
+
+    A class imported from ``common`` and used as a base class is a real API
+    dependency even though it never appears as an ``ast.Call``.  Tracking the
+    import aliases also handles ``import common as shared`` consistently.
+    """
+    module_aliases: set[str] = set()
+    imported_names: dict[str, str] = {}
+    wildcard_import = False
+    used: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for item in node.names:
+                if item.name == "common":
+                    module_aliases.add(item.asname or "common")
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module == "common":
+            for item in node.names:
+                if item.name == "*":
+                    wildcard_import = True
+                elif item.name in apis:
+                    imported_names[item.asname or item.name] = item.name
+                    used.add(item.name)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            api = imported_names.get(node.id)
+            if api is not None:
+                used.add(api)
+            elif wildcard_import and node.id in apis:
+                used.add(node.id)
+        elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            if node.value.id in module_aliases and node.attr in apis:
+                used.add(node.attr)
+    if wildcard_import:
+        used.update(apis)
+    return used
+
+
 def used_common_apis(refactored_files: Iterable[Path], apis: set[str]) -> dict[str, list[str]]:
     by_file: dict[str, list[str]] = {}
     for path in sorted(refactored_files):
@@ -44,7 +83,7 @@ def used_common_apis(refactored_files: Iterable[Path], apis: set[str]) -> dict[s
         if module is None:
             by_file[path.name] = []
             continue
-        by_file[path.name] = sorted(calls_in_tree(module) & apis)
+        by_file[path.name] = sorted(common_references_in_tree(module, apis))
     return by_file
 
 

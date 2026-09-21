@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import sys
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from demo.baselines.runner_utils import (
     read_text,
     run_metrics,
     selected_clusters,
+    status,
     status_payload,
     validate_common_usage,
     write_extraction_result,
@@ -160,7 +162,7 @@ def run_cluster(
             else None
         )
         tests_ok = behavior_tests_ok(metrics)
-        status = (
+        final_status = (
             "compile_failed" if not compile_info["ok"]
             else "tests_failed" if not tests_ok
             else "ok"
@@ -168,7 +170,7 @@ def run_cluster(
         result = {
             "baseline": "baseline_a",
             "cluster_id": cluster_id,
-            "status": status,
+            "status": final_status,
             "compile": compile_info,
             "common_usage": common_usage,
             "tests_verified": metrics is not None,
@@ -193,10 +195,16 @@ def main() -> None:
     parser.add_argument("--test-limit", type=int, default=0, help="Per-file test limit. Use 0 for all tests.")
     parser.add_argument("--compare-mode", choices=["expected", "original"], default="original")
     parser.add_argument("--normalize", choices=["strip", "whitespace"], default="whitespace")
-    parser.add_argument("--test-mode", choices=["stdio", "pytest"], default="stdio", help="pytest for the dataset_complex Scrapy slice.")
+    parser.add_argument("--test-mode", choices=["stdio", "pytest"], default="stdio", help="Use pytest for package-backed real-code datasets.")
     parser.add_argument("--resume", action="store_true", help="Skip clusters whose status.json is already ok.")
     parser.add_argument("--rerun-metrics", action="store_true", help="With --resume, recompute metrics for skipped ok clusters.")
     parser.add_argument("--skip-metrics", action="store_true", help="Only extract/refactor and compile; do not run tests or metrics.")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of clusters to extract concurrently. Each cluster writes to an independent directory.",
+    )
     args = parser.parse_args()
 
     manifest = load_manifest(args.manifest)
@@ -214,11 +222,11 @@ def main() -> None:
             write_json(out_dir / "status.json", {"baseline": "baseline_a", "cluster_id": cluster["cluster_id"], **status_payload("not_run", str(exc))})
         raise SystemExit(str(exc))
 
-    results = []
     total = len(clusters)
-    for index, cluster in enumerate(clusters, 1):
-        progress("baseline_a clusters", index - 1, total)
-        results.append(run_cluster(
+    worker_count = max(1, min(args.workers, total or 1))
+
+    def run_one(cluster: dict) -> dict:
+        return run_cluster(
             client,
             args.dataset_dir,
             args.results_dir,
@@ -231,8 +239,40 @@ def main() -> None:
             args.resume,
             args.rerun_metrics,
             args.skip_metrics,
-        ))
-        progress("baseline_a clusters", index, total)
+        )
+
+    results_by_id: dict[str, dict] = {}
+    if worker_count == 1:
+        for index, cluster in enumerate(clusters, 1):
+            progress("baseline_a clusters", index - 1, total)
+            result = run_one(cluster)
+            results_by_id[cluster["cluster_id"]] = result
+            progress("baseline_a clusters", index, total)
+    else:
+        print(
+            f"baseline_a: extracting {total} clusters with {worker_count} workers",
+            file=sys.stderr,
+            flush=True,
+        )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = {executor.submit(run_one, cluster): cluster for cluster in clusters}
+            for completed, future in enumerate(concurrent.futures.as_completed(futures), 1):
+                cluster = futures[future]
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    result = {
+                        "baseline": "baseline_a",
+                        "cluster_id": cluster["cluster_id"],
+                        **status_payload("failed", repr(exc)),
+                    }
+                    write_json(
+                        args.results_dir / "baseline_a" / cluster["cluster_id"] / "status.json",
+                        result,
+                    )
+                results_by_id[cluster["cluster_id"]] = result
+                progress("baseline_a clusters", completed, total)
+    results = [results_by_id[cluster["cluster_id"]] for cluster in clusters]
     write_json(args.results_dir / "baseline_a" / "summary.json", results)
 
 

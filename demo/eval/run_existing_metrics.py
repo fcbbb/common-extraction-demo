@@ -173,13 +173,28 @@ def run_subcluster_method_metrics(
             )
             sub_results.append(update_status_with_metrics(status_path, compile_info, metrics))
 
-        covered = set().union(*(set(item["members"]) for item in valid)) if valid else set()
+        successful_ids = {
+            item.get("subcluster_id")
+            for item in sub_results
+            if item.get("status") == "ok"
+        }
+        successful = [item for item in valid if item["cluster_id"] in successful_ids]
+        covered = set().union(*(set(item["members"]) for item in successful)) if successful else set()
+        failed_count = len(valid) - len(successful)
+        cluster_status = (
+            "ok"
+            if failed_count == 0
+            else "partial_failed"
+            if successful
+            else "failed"
+        )
         result = {
             "baseline": method,
             "cluster_id": cluster_id,
-            "status": "ok",
+            "status": cluster_status,
             "discovered_subclusters": len(subclusters),
-            "valid_subclusters": len(valid),
+            "valid_subclusters": len(successful),
+            "extraction_candidates": len(valid),
             "noise_files": sorted((set(discovery.get("noise") or []) | (cluster_files - covered)) & cluster_files),
             "subclusters": sub_results,
         }
@@ -201,7 +216,7 @@ def main() -> None:
     parser.add_argument("--test-limit", type=int, default=0, help="Per-file test limit. Use 0 for all tests.")
     parser.add_argument("--compare-mode", choices=["expected", "original"], default="original")
     parser.add_argument("--normalize", choices=["strip", "whitespace"], default="whitespace")
-    parser.add_argument("--test-mode", choices=["stdio", "pytest"], default="stdio", help="pytest for the dataset_complex Scrapy slice.")
+    parser.add_argument("--test-mode", choices=["stdio", "pytest"], default="stdio", help="Use pytest for package-backed real-code datasets.")
     parser.add_argument("--workers", type=int, default=0, help="Parallel test workers. 0 = auto (min(cpu_count, 16)). Override with TEST_WORKERS env.")
     parser.add_argument("--skip-mdl", action="store_true", help="Skip GGUF MDL measurement.")
     args = parser.parse_args()

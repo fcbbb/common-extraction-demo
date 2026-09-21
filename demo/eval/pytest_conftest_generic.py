@@ -1,21 +1,9 @@
-"""Small pytest adapter for non-Scrapy complex-style datasets."""
+"""Small pytest adapter shared by package-backed real-code datasets."""
 
 from __future__ import annotations
 
 import json
 import os
-
-
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "tests.settings")
-os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")
-
-try:
-    import django
-
-    django.setup()
-except ModuleNotFoundError:
-    # Collection will report the missing dependency in the normal pytest way.
-    pass
 
 
 def pytest_addoption(parser, pluginmanager):
@@ -38,6 +26,15 @@ def pytest_collection_modifyitems(items):
         if class_stem is not None:
             classnames = {f"{classname}.{class_stem}" for classname in classnames}
         candidates = {f"{classname}::{item.name}" for classname in classnames}
-        if candidates & selected_cases:
+        # Pytest can import the same test module as either ``test_foo`` or
+        # ``tests.test_foo`` depending on package layout, while JUnit records
+        # the latter.  Treat a package-qualified JUnit classname as the same
+        # case when its module/class suffix matches the collected item.
+        suffix_match = any(
+            selected.endswith(f".{candidate}")
+            for selected in selected_cases
+            for candidate in candidates
+        )
+        if candidates & selected_cases or suffix_match:
             retained.append(item)
     items[:] = retained

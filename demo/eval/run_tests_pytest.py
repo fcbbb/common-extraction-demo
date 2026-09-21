@@ -1,11 +1,10 @@
-"""Pytest-based test runner for the dataset_complex Scrapy slice.
+"""Pytest-based behavior runner for package-backed real-code datasets.
 
-The slice's tests are upstream pytest unit tests importing `scrapy.*` and
-`tests.*`, so the stdin/stdout model of run_tests.py does not apply. Instead:
+These datasets use upstream pytest modules, so the stdin/stdout model of
+run_tests.py does not apply. Instead:
 
-- a temp dir gets a full `scrapy` package (symlink-copied from the installed
-  site-packages, with the slice's original or refactored files overlaid at
-  their real package paths),
+- a temp dir gets the full package with original or refactored files overlaid
+  at their real package paths,
 - `common.py` is placed at the temp root so refactored `import common` works,
 - the dataset's `tests/` directory (including upstream test infra) is copied,
 - pytest runs each test file once for the original layout, then runs only the
@@ -29,8 +28,10 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_MANIFEST = ROOT / "demo" / "dataset_complex" / "cluster_manifest.json"
-# --reactor=asyncio mirrors upstream scrapy's [tool.pytest.ini_options].addopts
+DEFAULT_DATASET_DIR = ROOT / "demo" / "datasets" / "libcloud_loadbalancer_real"
+DEFAULT_MANIFEST = DEFAULT_DATASET_DIR / "cluster_manifest.json"
+# The generic adapter accepts --reactor even when pytest-twisted is absent;
+# this also preserves compatibility with the retired Scrapy dataset.
 PYTEST_ARGS = ["-q", "--no-header", "-p", "no:cacheprovider", "--reactor=asyncio"]
 
 
@@ -76,9 +77,8 @@ def discover_python_pkg(package_name: str) -> Path:
 def build_overlay(tmp: Path, cluster: dict[str, Any], dataset_dir: Path, result_dir: Path | None) -> None:
     """Materialize the package + slice overlay and tmp/tests.
 
-    The original complex dataset uses an installed Scrapy package.  A dataset
-    may instead provide ``package_source_rel`` in its manifest, which is useful
-    for self-contained packages such as django-storages.
+    A dataset can provide ``package_source_rel`` for a self-contained source
+    tree. Otherwise the installed package is used as the overlay base.
     """
     package_name = cluster.get("package_name", "scrapy")
     package_source_rel = cluster.get("package_source_rel")
@@ -122,7 +122,24 @@ def build_overlay(tmp: Path, cluster: dict[str, Any], dataset_dir: Path, result_
     test_dir = ROOT / cluster["test_dir"]
     shutil.copytree(test_dir, tmp / "tests", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 
-    conftest_name = cluster.get("pytest_conftest", "scrapy")
+    # Some upstream tests address fixture files relative to their original
+    # package-test root instead of through an importable fixture helper.  A
+    # dataset can reproduce those paths without modifying the upstream tests.
+    for item in cluster.get("pytest_extra_paths", []):
+        source = dataset_dir / item["source"]
+        destination = tmp / item["dest"]
+        if source.is_dir():
+            shutil.copytree(
+                source,
+                destination,
+                dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            )
+        else:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+
+    conftest_name = cluster.get("pytest_conftest", "generic")
     conftest = Path(__file__).resolve().parent / (
         "pytest_conftest_generic.py" if conftest_name == "generic" else "pytest_conftest.py"
     )
@@ -456,9 +473,9 @@ def test_original_cluster(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run pytest suites for the dataset_complex Scrapy slice.")
+    parser = argparse.ArgumentParser(description="Run behavior checks for a pytest-backed dataset.")
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
-    parser.add_argument("--dataset-dir", type=Path, default=ROOT / "demo" / "dataset_complex")
+    parser.add_argument("--dataset-dir", type=Path, default=DEFAULT_DATASET_DIR)
     parser.add_argument("--cluster-id", required=True)
     parser.add_argument("--result-dir", type=Path, help="Baseline cluster result directory (refactored mode).")
     parser.add_argument("--timeout-sec", type=float, default=300.0)

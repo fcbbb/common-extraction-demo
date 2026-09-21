@@ -10,6 +10,7 @@ Per cluster writes under results/<dataset>/signal/<cluster_id>/:
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 import time
@@ -96,6 +97,7 @@ def discover_cluster(
     force_semantic: bool,
     resume: bool,
     gate_cfg: dict[str, Any],
+    rerun_gate: bool = False,
 ) -> dict[str, Any]:
     from . import gate  # noqa: PLC0415 - optional import keeps CLI importable pre-gate
 
@@ -127,7 +129,7 @@ def discover_cluster(
             f"{candidates_doc['edges_kept']}/{candidates_doc['edges_total']} pair edges passed, "
             f"{candidates_doc['n_candidates']} candidates"
         )
-    if resume and load_json_if_exists(out_dir / "discovery.json") is not None:
+    if resume and not rerun_gate and load_json_if_exists(out_dir / "discovery.json") is not None:
         final_doc = load_json_if_exists(out_dir / "discovery.json")
         print(f"signal cluster {cluster_id}: resume hit, reusing discovery.json", file=sys.stderr, flush=True)
     else:
@@ -166,18 +168,41 @@ def main() -> None:
     parser.add_argument("--cluster-id", action="append")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--embedding-model", default=semantic_signal.DEFAULT_MODEL)
+    parser.add_argument(
+        "--semantic-top-frac",
+        type=float,
+        default=None,
+        help="Override the semantic top-edge fraction (0.005 means top 0.5%%).",
+    )
     parser.add_argument("--skip-semantic", action="store_true")
     parser.add_argument("--force-semantic", action="store_true", help="Re-run embedding even when cached.")
     parser.add_argument("--skip-gate", action="store_true")
+    parser.add_argument("--rerun-gate", action="store_true", help="Reuse candidates but run the LLM gate again.")
+    parser.add_argument(
+        "--unit-preference",
+        choices=["leaf", "coarse"],
+        default="coarse",
+        help="Candidate scope policy: leaf keeps methods/functions; coarse prefers class envelopes over methods.",
+    )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--api-timeout-sec", type=float, default=None)
     parser.add_argument("--max-output-tokens", type=int, default=None)
+    parser.add_argument("--gate-workers", type=int, default=1)
     args = parser.parse_args()
     manifest = load_manifest(args.manifest)
     clusters = selected_clusters(manifest, args.cluster_id, args.limit)
     # Candidate cfg (frozen defaults; tuned on codecontest clusters 0/1, eyeball vs baseline_b).
-    cfg = fusion.DEFAULT_CFG
-    gate_cfg = {"api_timeout_sec": args.api_timeout_sec, "max_output_tokens": args.max_output_tokens}
+    cfg = copy.deepcopy(fusion.DEFAULT_CFG)
+    cfg["unit_preference"] = args.unit_preference
+    if args.semantic_top_frac is not None:
+        if not 0.0 <= args.semantic_top_frac <= 1.0:
+            parser.error("--semantic-top-frac must be between 0 and 1")
+        cfg["semantic"]["or_top_frac"] = args.semantic_top_frac
+    gate_cfg = {
+        "api_timeout_sec": args.api_timeout_sec,
+        "max_output_tokens": args.max_output_tokens,
+        "gate_workers": max(1, args.gate_workers),
+    }
     statuses = []
     for cluster in clusters:
         t0 = time.time()
@@ -193,6 +218,7 @@ def main() -> None:
                 args.force_semantic,
                 args.resume,
                 gate_cfg,
+                args.rerun_gate,
             )
         except Exception as exc:
             st = {"signal": "signal", "cluster_id": cluster["cluster_id"], "stage": "discovery", "status": "failed", "error": repr(exc)}

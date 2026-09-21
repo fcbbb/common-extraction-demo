@@ -1,19 +1,16 @@
-name: qwen-gguf
+name: common-extraction
 channels:
   - defaults
 dependencies:
   - python=3.10
   - pip
-  # llama-cpp-python 需要 CUDA 源码构建（MDL 评估用 GGUF 必须），不能用默认 pip 装：
-  #   CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 pip install llama-cpp-python==0.3.35
-  # 构建后自带 nvidia-cublas-cu12 / nvidia-cuda-runtime-cu12；运行前需把 LD_LIBRARY_PATH 指向它们
   - pip:
-      - llama-cpp-python==0.3.35
       - numpy==2.2.6
       - pytest==9.1.1
-      - pytest-asyncio==1.4.0
-      - pytest-twisted==1.14.3
-      - pyftpdlib==2.2.0
-      # dataset_complex 的测试文件按 scrapy commit 3c6a62db 取的，需与其行为一致；
-      # README 用 git+https://github.com/scrapy/scrapy@3c6a62db47536df89676ab9d7347acf5c5c8a2e4，2.17.0 为对应发布版
-      - scrapy==2.17.0
+      - requests==2.34.2
+      - apache-libcloud==3.9.1
+      - sentence-transformers==5.4.1
+
+# 可选 MDL 评估不属于当前两组最终结果的必要步骤。需要时另行安装：
+# CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 \
+#   pip install llama-cpp-python==0.3.35

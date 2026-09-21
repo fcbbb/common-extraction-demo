@@ -34,5 +34,12 @@ Rules:
 - Reject (empty groups) only when the overlap is merely generic I/O boilerplate,
   imports, method signatures, comments, logging, or trivial glue without shared
   algorithmic behavior or a reusable framework abstraction.
+- Also reject a group when the shared implementation is too small to pay for one
+  common definition plus the import/call-site edits in every member file. If the
+  expected token saving is non-positive, return no group even when the code is
+  semantically related. A semantic-only similarity signal is not enough by
+  itself to justify extraction.
+- Use a conservative judgment: when unsure whether the shared component is large
+  enough to reduce executable tokens, reject it rather than forcing extraction.
 - The files within one candidate are listed in the "files" array; use those ids.
 - Output valid JSON only. Do not wrap it in markdown.

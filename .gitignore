@@ -1,16 +1,84 @@
-# 大文件：模型（17GB）、抽取结果（可重新生成）、任务日志
-model/
-demo/results/
-slurm_log/
+# -----------------------------------------------------------------------------
+# Secrets and local configuration
+# -----------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
 
-# 信号方法 embedding 模型与缓存（可再生）
+# -----------------------------------------------------------------------------
+# Python / test / editor artifacts
+# -----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.idea/
+.vscode/
+.DS_Store
+
+# -----------------------------------------------------------------------------
+# Large, downloaded, or reproducible assets
+# -----------------------------------------------------------------------------
+model/
+.cache/
 demo/discovery/models/
 demo/discovery/cache/
+slurm_log/
 
-# Python
-__pycache__/
-*.pyc
-.pytest_cache/
+# Raw upstream CodeContests export.  The prepared, anonymized dataset under
+# demo/datasets/codecontest/ is tracked and is sufficient to run experiments.
+Librarian/
 
-# 环境
-.env
+# Retired and exploratory datasets.  Keep local copies if useful, but do not
+# publish them as part of the reproducible two-dataset release.
+demo/datasets/complex/
+demo/datasets/fsspec_real/
+demo/datasets/kedro_connectors_real/
+demo/datasets/kedro_pandas/
+demo/datasets/kedro_pandas_core_real/
+demo/datasets/kedro_plugins_upstream/
+demo/datasets/kedro_real/
+demo/datasets/kombu_real/
+demo/datasets/libcloud_loadbalancer_real/
+demo/datasets/omni_storage/
+demo/datasets/pydal_backends_real/
+
+# One-off dataset scouting utilities retained locally for reference.
+demo/eval/screen_kedro_pandas.py
+demo/prepare/prepare_dataset_fsspec_real.py
+demo/prepare/prepare_dataset_kedro_connectors_real.py
+demo/prepare/prepare_dataset_kedro_pandas.py
+demo/prepare/prepare_dataset_kedro_pandas_core.py
+demo/prepare/prepare_dataset_kedro_real.py
+demo/prepare/prepare_dataset_kombu_real.py
+demo/prepare/prepare_dataset_pydal_real.py
+
+# Legacy MDL batch jobs tied to retired result layouts and machine-local paths.
+docs/recompute_mdl.sh
+demo/scripts/recompute_mdl_b.py
+demo/scripts/recompute_tokens_mdl.py
+
+# -----------------------------------------------------------------------------
+# Generated experiment artifacts
+# -----------------------------------------------------------------------------
+# Raw API responses, refactored trees, test traces, and historical trials can
+# be regenerated and may contain large payloads.  Track only curated summaries.
+demo/results/*
+!demo/results/codecontest/
+demo/results/codecontest/*
+!demo/results/codecontest/EXPERIMENT_REPORT.md
+!demo/results/codecontest/full_recompute_summary.json
+!demo/results/libcloud_loadbalancer_real/
+demo/results/libcloud_loadbalancer_real/*
+!demo/results/libcloud_loadbalancer_real/EXPERIMENT_REPORT.md
+!demo/results/libcloud_loadbalancer_real/full_pool_comparison.json
+!demo/results/libcloud_loadbalancer_real/embedding_recall_summary.json
+
+# Keep one current human-facing report; older generated reports remain local.
+demo/reports/*
+!demo/reports/final_report_signal.md

@@ -1,0 +1,37 @@
+{
+  "dataset": "apache/libcloud",
+  "file_count": 10,
+  "signal_covered_files": 4,
+  "signal_subclusters": [
+    {
+      "id": "sub_0",
+      "members": [
+        "file_003.py",
+        "file_007.py"
+      ]
+    },
+    {
+      "id": "sub_1",
+      "members": [
+        "file_000.py",
+        "file_004.py"
+      ]
+    }
+  ],
+  "rows": [
+    {
+      "method": "baseline_a",
+      "tokens_before": 26045,
+      "tokens_after": 26031,
+      "compression": 0.0005
+    },
+    {
+      "method": "signal",
+      "tokens_before": 26045,
+      "tokens_after": 23471,
+      "compression": 0.0988
+    }
+  ],
+  "decision": "signal_not_worse",
+  "test_gate": "Require all changed subclusters to compile and pass the same original-passing pytest cases; unchanged noise is retained byte-for-byte."
+}

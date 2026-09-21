@@ -1,186 +1,135 @@
-# 代码共性组件抽取 Demo
+# 多信号代码共性组件抽取
 
-从一组功能相似的代码文件中抽取公共组件（`common.py`），并把各文件改写为使用该组件的形态，然后从功能等价性、压缩率、覆盖率、冲突率等维度评估抽取质量。
+本仓库比较两种自动代码共性抽取方法：
 
-本仓库已经包含两个 baseline 的完整结果，也可以跑你自己的抽取方法（见下文「跑你自己的抽取方法」）。
+- **Baseline A**：把整个文件簇一次性交给大模型，直接生成公共组件与成员改写；
+- **Signal**：先用逐字克隆、AST 骨架和语义嵌入召回局部候选，再经 LLM 判定门筛选并抽取。
 
-## 目录结构
+功能等价是硬约束。最终结果只接受编译成功、行为测试全部通过且净 token 收益为正的改写；未接受文件保持原样并计入完整代码池。
 
-```
-demo/
-  baselines/        # baseline a/b 的抽取实现（调 DeepSeek API）
-  eval/             # 评估：编译、测试、MDL、token、API 覆盖率、冲突率、报告
-  prepare/          # 数据预处理（prepare_dataset.py / prepare_dataset_complex.py）
-  datasets/         # 数据集
-    codecontest/    #   CodeContests（10 个 cluster，stdio 测试）
-    complex/        #   Scrapy 切片（1 个 cluster，pytest 测试）
-  results/          # 抽取结果
-    codecontest/    #   CodeContests 的 baseline_a/b 结果
-    complex/        #   Scrapy 切片的 baseline_a/b 结果
-  reports/          # 报告（report.md 由 demo.eval.report 生成，final_report.md 为分析文档）
-  scripts/          # MDL 重算脚本（recompute_mdl_b.py 等）
-  README.md         # demo 内部详细说明
-docs/               # 运行脚本（run_extract/run_eval/recompute_mdl）+ 设计文档
-model/              # GGUF 模型（MDL 评估用）
-Librarian/data/     # 上游原始数据（datasets 的来源）
-environment.yml     # qwen-gguf conda 环境定义
-```
+## 当前结果
 
-## 环境准备
+| 数据集 | 性质 | Baseline A | Signal | 有效行为验证 |
+| --- | --- | ---: | ---: | ---: |
+| Apache Libcloud load-balancer drivers | 真实生产代码 | 0.05% | **9.88%** | 全部通过 |
+| CodeContests | 受控竞赛代码 | 3.81% | **5.13%** | 24,897 / 24,897 |
+
+完整分析见[最终中文报告](demo/reports/final_report_signal.md)。已提交的 `demo/results/` 只包含小型汇总；原始 API 响应、改写代码树、测试轨迹、模型和缓存均被 Git 忽略。
+
+## 五分钟开始
+
+### 1. 创建环境
 
 ```bash
 conda env create -f environment.yml
-conda activate qwen-gguf
+conda activate common-extraction
+cp .env.example .env
 ```
 
-注意：`llama-cpp-python` 需要 **CUDA 源码构建**（MDL 评估必须），直接 `conda env create` 装的是 CPU 版。按 [environment.yml](environment.yml) 顶部注释里的 `CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 pip install llama-cpp-python==0.3.35` 重装。
+在 `.env` 中填写 `DEEPSEEK_API_KEY`。不要把真实密钥提交到 Git。
 
-## 数据集
+### 2. 验证仓库
 
-两个数据集都已生成好（`demo/datasets/codecontest/`、`demo/datasets/complex/`），无需再 prepare。如需重新生成：
+以下步骤不访问网络、不调用大模型 API：
 
 ```bash
-conda run -n qwen-gguf python -m demo.prepare.prepare_dataset           # CodeContests
-conda run -n qwen-gguf python -m demo.prepare.prepare_dataset_complex   # Scrapy 切片
+make check
+make verify-results
 ```
 
-## 快速跑通已有 baseline
+### 3. 准备数据
 
-两个阶段分开跑：
+CodeContests 的匿名化源码和测试清单已经随仓库提供，无需准备。
+
+Libcloud 使用固定的 `v3.9.1` / commit `6c867a3...`，首次运行会下载上游仓库并生成测试切片：
 
 ```bash
-# 阶段 1：抽取（DeepSeek API，CPU 即可）
-# 需要先 export DEEPSEEK_API_KEY=...
-bash docs/run_extract.sh        # 默认 DATASET=codecontest, BASELINE=both, CLUSTER_ID=all
-
-# 阶段 2：评估 + 报告（需要 GPU + model/Qwen3.8-27B-Q4_K_M.gguf）
-bash docs/run_eval.sh           # 默认 BASELINE=a
+make prepare-libcloud
 ```
 
-常用开关（详见 docs/command.md）：
+下载缓存在 `.cache/`，准备后的上游副本位于 `demo/datasets/libcloud_loadbalancer_real/`；两者均不会进入 Git。
 
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| `DATASET` | `codecontest` | `codecontest` / `complex` |
-| `BASELINE` | extract: `both`；eval: `a` | `a` / `b` / `both` |
-| `CLUSTER_ID` | `all` | `0..9` 或 `all` |
-| `RESUME` | `0` | `1` 跳过已 ok 的 cluster |
-| `MODEL_PATH` | `model/Qwen3.8-27B-Q4_K_M.gguf` | MDL 用模型 |
-| `TEST_TIMEOUT_SEC` | `5`（complex 建议 `120`） | 单测试超时 |
+### 4. 运行一次小规模实验
 
-只重算 MDL（不动其他指标）：`bash docs/recompute_mdl.sh`。
-
-## 跑 signal 方法（工具信号发现 + LLM 判定门）
-
-与 baseline-b 的差异只在**发现阶段**：baseline-b 一次 LLM 调用直接给子簇；signal 先由三路确定性工具信号找候选 —— S1 逐字 token 克隆、S2 AST 骨架结构克隆、S3 语义 embedding（C2LLM-0.5B）—— 再用 LLM 判定门逐候选确认/收窄/拒绝，产出与 baseline-b 同 schema 的 `discovery.json`，抽取复用 baseline-b 引擎，同管线评估出报告。
+CodeContests 单簇：
 
 ```bash
-# 阶段 1a：发现 + 判定门 + 抽取（DeepSeek API，CPU 即可；语义信号在带 torch 的 experiments env 里跑一次并缓存）
-export DEEPSEEK_API_KEY=...
-conda run -n qwen-gguf python -m demo.baselines.run_signal \
-  --manifest demo/datasets/codecontest/cluster_manifest.json \
-  --dataset-dir demo/datasets/codecontest \
-  --results-dir demo/results/codecontest \
-  --resume          # 跳过已 ok 的 cluster；只跑发现用 --discovery-only
-
-# 只跑发现（不调抽取 API，--skip-gate 则连判定门也不调）：
-conda run -n qwen-gguf python -m demo.discovery.discover_cluster \
-  --manifest demo/datasets/codecontest/cluster_manifest.json \
-  --dataset-dir demo/datasets/codecontest --results-dir demo/results/codecontest \
-  --cluster-id 0 --cluster-id 1
-
-# 阶段 2：评估 + 报告（GPU + model/Qwen3.8-27B-Q4_K_M.gguf）
-conda run -n qwen-gguf python -m demo.eval.run_existing_metrics \
-  --manifest demo/datasets/codecontest/cluster_manifest.json \
-  --dataset-dir demo/datasets/codecontest --results-dir demo/results/codecontest \
-  --baseline signal
-conda run -n qwen-gguf python -m demo.eval.report \
-  --results-dir demo/results/codecontest --out demo/reports/report_signal.md
+DATASET=codecontest METHOD=all CLUSTER_ID=0 bash docs/run_extract.sh
+DATASET=codecontest METHOD=all CLUSTER_ID=0 bash docs/run_eval.sh
 ```
 
-signal 结果布局（与 baseline_b 同根平级，抽取产物形态一致，仅 status 的 `baseline` 字段为 `signal`）：
-
-```
-demo/results/codecontest/signal/<cluster_id>/
-  discovery_candidates.json    # 工具信号候选（含逐对证据，审计用）
-  gate_c*_raw_response.txt     # 每候选判定门原始响应/调用日志
-  discovery.json               # 最终有效簇 + noise（与 baseline_b 同 schema）
-  sub_0/{common.py, refactored/, ...}   # 每个有效子簇一次独立抽取
-```
-
-语义向量缓存于 `demo/discovery/cache/`，簇级改动不重算；`--force-semantic` 可绕过。
-
-## 跑你自己的抽取方法
-
-核心思路：**抽取方法自由，评估管线固定**。你只需要按下面的输出契约把你的结果写进一个结果目录，剩下的评估和报告全部复用。
-
-### 输入契约（你的方法读什么）
-
-- manifest：`demo/datasets/codecontest/cluster_manifest.json`，顶层有 `clusters` 列表，每个 cluster 有：
-  - `cluster_id`（`"0"` ~ `"9"`）
-  - `files`：成员列表，每项含 `file_id`（如 `file_000.py`）、`name`、`difficulty`、`tests`（public/private/generated 输入输出）
-- 源码文件：`demo/datasets/codecontest/clusters/<cluster_id>/original/file_*.py`，只有 `solution` 字段写进了文件；测试和题目信息只在 manifest 里（评估时才用，不会进你的 prompt）
-
-### 输出契约（评估器读什么）
-
-评估代码直接支持本仓库三种方法目录 `baseline_a` / `baseline_b` / `signal`（`run_existing_metrics --baseline a|b|signal|both`，report.py 自动扫三者的 Main Table + 发现附表）。第三方方法把结果写进一个新目录即可（`baseline_a` / `baseline_b` 的布局都行），例如 `demo/results_mymethod/`：
-
-**baseline_a 布局（整簇抽取）** —— 每个 cluster 一个目录：
-
-```
-demo/results_mymethod/baseline_a/<cluster_id>/
-  common.py            # 抽取出的公共代码
-  refactored/          # 改写后的成员文件，文件名与 original 对应（file_*.py）
-```
-
-**baseline_b 布局（子簇抽取）** —— 先做子簇发现，再逐子簇抽取：
-
-```
-demo/results_mymethod/baseline_b/<cluster_id>/
-  discovery.json       # {"clusters": [{"cluster_id": "sub_0", "members": ["file_000.py", ...]}], "noise": [...]}
-  sub_0/
-    common.py
-    refactored/
-  sub_1/
-    ...
-```
-
-### 评估你的结果
+Libcloud 全目录只有一个簇：
 
 ```bash
-# 对已有抽取产物跑编译 + 测试 + 全部指标（缺 common.py/refactored 的 cluster 记为 missing_extraction）
-conda run -n qwen-gguf python -m demo.eval.run_existing_metrics \
-  --manifest demo/datasets/codecontest/cluster_manifest.json \
-  --dataset-dir demo/datasets/codecontest \
-  --results-dir demo/results_mymethod \
-  --baseline a
-
-# 生成报告（baseline a + b 都会扫；--results-dir 可传多个，生成合并报告）
-conda run -n qwen-gguf python -m demo.eval.report \
-  --results-dir demo/results_mymethod \
-  --results-dir demo/results/codecontest \
-  --out demo/reports/report_mymethod.md
+DATASET=libcloud METHOD=all bash docs/run_extract.sh
+DATASET=libcloud METHOD=all TEST_TIMEOUT_SEC=120 bash docs/run_eval.sh
 ```
 
-评估开关：`--test-limit`（每文件测试数，0=全部）、`--compare-mode original|expected`、`--normalize whitespace|strip`（默认严格模式 `original`+`whitespace`；Librarian 兼容的宽松模式是 `expected`+`strip`，见 docs/command.md）、`--test-mode stdio|pytest`（complex 数据集用 pytest）。
+`METHOD=all` 运行 Baseline A 和 Signal；也可设为 `a`、`signal` 或兼容的 `b`。抽取阶段会产生远端 API 费用。默认使用 4 路 API 并发，可用 `WORKERS=1` 调低。
 
-### 指标怎么解读
+## Signal 流程
 
-| 指标 | 含义 |
-|---|---|
-| pass file % / pass test % | 功能等价性。先用原始代码筛出通过的测试，再计算重构版在该子集上的比例；分母分别是含原始通过测试的文件数和原始通过测试数 |
-| MDL compression | 改写后 vs 原文件在参照 LM（GGUF 模型）下的 log-likelihood 压缩率 |
-| token compression | 改写前后 token 数压缩率 |
-| file API coverage / API usage coverage | 公共代码中被成员文件实际使用的 API 占比 |
-| conflict rate | 改写与原始实现的冲突率 |
+```text
+源代码
+  ├─ 逐字 token 克隆
+  ├─ AST 骨架相似
+  └─ 代码语义嵌入
+          ↓
+      多信号融合
+          ↓
+      LLM 判定门
+          ↓
+  局部公共组件与成员改写
+          ↓
+  编译、行为测试、收益验收
+```
 
-### 用自己的方法名而不是 baseline_a/b
+语义通道默认使用 `codefuse-ai/C2LLM-0.5B`，首次运行由 Hugging Face 下载；失败时回退到 `Qwen/Qwen3-Embedding-0.6B`。可通过 `--embedding-model` 指定本地路径，也可设置 `DEMO_EMBED_PYTHON` 或 `DEMO_EMBED_ENV` 使用独立嵌入环境。嵌入缓存位于 `demo/discovery/cache/`。
 
-`run_existing_metrics.py` 的 `run_baseline_a_metrics` 固定写 `results_dir/"baseline_a"`；`run_baseline_b_metrics` 与 `run_subcluster_method_metrics(method, ...)` 是同一个引擎，`--baseline signal` 即 `method="signal"`。`report.py` 的 `baseline_a_rows` / `method_rows(results_dir, method)` 读取对应目录，`render_dataset_section` 自动扫 `baseline_b` + `signal`。新增方法名：整簇抽取照抄 a，子簇抽取把结果写进自己的目录后把方法名加进 `report.py` 的 method 元组即可，评估逻辑不用动。
+本次最终实验使用 `semantic_top_frac=0.005`、4 路 gate/extraction 并发和 65,536 token 的 API 输出上限。
 
-## 相关文档
+## 目录结构
 
-- [docs/command.md](docs/command.md) — 常用命令速查
-- [docs/baseline_plan.md](docs/baseline_plan.md) — baseline 设计
-- [docs/代码共性组件抽取Demo版技术方案.md](docs/代码共性组件抽取Demo版技术方案.md) — 技术方案
-- [demo/README.md](demo/README.md) — demo 内部细节（含 complex 环境安装说明）
+```text
+demo/
+  baselines/      Baseline A、Baseline B 和 Signal 运行器
+  discovery/      克隆、AST、语义信号、融合与 LLM 判定门
+  eval/           编译、测试、指标、完整池比较和发布结果校验
+  prepare/        CodeContests 与 Libcloud 数据准备
+  datasets/       已跟踪的 CodeContests；本地生成的 Libcloud 被忽略
+  results/        仅跟踪当前两组实验的小型汇总
+  reports/        当前最终中文报告
+docs/
+  run_extract.sh  生成公共组件和改写代码
+  run_eval.sh     对已有产物执行测试与评估
+tests/            不依赖 API 的离线测试
+```
+
+## 常用参数
+
+| 环境变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `DATASET` | `codecontest` | `codecontest` 或 `libcloud` |
+| `METHOD` | `all` | `a`、`b`、`signal` 或 `all` |
+| `CLUSTER_ID` | `all` | 指定代码簇；CodeContests 可设 `0`–`9` |
+| `WORKERS` | `4` | Baseline A、Signal gate 和抽取并发数 |
+| `RESUME` | `0` | 设为 `1` 复用已完成产物 |
+| `SEMANTIC_TOP_FRAC` | `0.005` | 语义边额外保留比例 |
+| `TEST_WORKERS` | `16` | 评估并发数 |
+| `ENABLE_MDL` | `0` | 设为 `1` 启用可选 GGUF MDL 指标 |
+
+更多命令见[命令速查](docs/command.md)，结果口径和局限见[最终报告](demo/reports/final_report_signal.md)。
+
+## 结果口径
+
+- token 使用 Python tokenizer 统计，排除注释和文档字符串；
+- 行为通过率只在原始程序已通过的测试子集上计算；
+- Signal 候选有文件重叠时，使用最大权重的文件互斥组合；
+- Baseline A 和 Signal 都采用相同的“测试通过且正收益，否则回滚”规则；
+- CodeContests 的完整池组合目前是保守核算结果，联合部署前仍需命名各公共模块并再次执行完整测试。
+
+## 安全与大文件
+
+- `.env`、模型、缓存、Slurm 日志和原始 API 响应已经加入 `.gitignore`；
+- 不要把 API key 写入命令历史、报告或调用日志；
+- 可选 MDL 需要自行安装 `llama-cpp-python` 并设置 `MODEL_PATH`，不影响当前主结果复现。

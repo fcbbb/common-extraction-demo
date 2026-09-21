@@ -13,14 +13,14 @@ import argparse
 import json
 import os
 import sys
-from pathlib import Path
 from typing import Any
 
 from .units import CONTAINER_TYPES, method_containers, parse_units
 
-# Local vendored copy: upstream modeling imports peft/deepspeed for training-only
-# paths that never run here; the copy strips those imports (see models/C2LLM-0.5B).
-DEFAULT_MODEL = str(Path(__file__).resolve().parent / "models" / "C2LLM-0.5B")
+# The model is downloaded into the Hugging Face cache on first use.  A local
+# path can be supplied with --embedding-model or DEMO_EMBED_PYTHON can point to
+# a dedicated environment.
+DEFAULT_MODEL = "codefuse-ai/C2LLM-0.5B"
 FALLBACK_MODELS = ["Qwen/Qwen3-Embedding-0.6B"]
 
 
