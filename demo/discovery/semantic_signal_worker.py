@@ -35,6 +35,16 @@ def _embed(sources: list[dict[str, str]], model_name: str) -> tuple[Any, list[An
             if device == "cuda" and not torch.cuda.is_available():
                 continue
             model = SentenceTransformer(model_name, trust_remote_code=True, device=device)
+            max_seq_length = os.environ.get("DEMO_EMBED_MAX_SEQ_LENGTH")
+            if max_seq_length is not None:
+                resolved_max_seq_length = int(max_seq_length)
+                if resolved_max_seq_length <= 0:
+                    raise ValueError("DEMO_EMBED_MAX_SEQ_LENGTH must be positive")
+                model.max_seq_length = resolved_max_seq_length
+                print(
+                    f"[semantic] max_seq_length={resolved_max_seq_length} via environment",
+                    flush=True,
+                )
             embs = model.encode(
                 texts, batch_size=8, show_progress_bar=False, normalize_embeddings=True, convert_to_numpy=True
             )

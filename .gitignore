@@ -96,5 +96,4 @@ demo/reports/*
 TODO.md
 demo/datasets/libcloud_dns_history/
 demo/datasets/libcloud_lxd_history/
-demo/downstream/tasks.json
 demo/downstream/*.md

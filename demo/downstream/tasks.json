@@ -1,0 +1,176 @@
+{
+  "schema": "downstream-history-tasks-v1",
+  "selection_status": "selected_one_task_gates_passed",
+  "selection_policy": {
+    "task_count": 3,
+    "repository_count": 3,
+    "requires_real_history": true,
+    "requires_offline_future_tests": true,
+    "future_patch_visible_to_agent": false
+  },
+  "tasks": [
+    {
+      "task_id": "moto_service_cleanrooms",
+      "status": "gates_passed",
+      "repository": {
+        "slug": "getmoto/moto",
+        "url": "https://github.com/getmoto/moto.git",
+        "license": "Apache-2.0"
+      },
+      "history": {
+        "c0": "0bcc551e0a3a1276cc3d5d2c4312bfe8f44fa614",
+        "future_start": "20afea38984d543247f9aaf9f82095bb927944db",
+        "future_end": "20afea38984d543247f9aaf9f82095bb927944db",
+        "upstream_reference": "https://github.com/getmoto/moto/pull/10113"
+      },
+      "evolution_pattern": "new_service_implementation",
+      "agent_task": "Implement the AWS Clean Rooms Service mock for this moto checkout. Follow the cleanrooms botocore service model as the API contract: collaborations, memberships, and configured tables with full CRUD, pagination, and resource tagging, with unknown resources raising the modeled not-found error. Create moto/cleanrooms/ with the same layout as existing services and register the backend in moto/backends.py and moto/backend_index.py. Preserve existing service conventions and backward compatibility.",
+      "signal_history_paths": [
+        "moto/s3tables/models.py",
+        "moto/s3tables/responses.py",
+        "moto/emrcontainers/models.py",
+        "moto/emrcontainers/responses.py",
+        "moto/inspector2/models.py",
+        "moto/inspector2/responses.py",
+        "moto/servicequotas/models.py",
+        "moto/servicequotas/responses.py",
+        "moto/budgets/models.py",
+        "moto/budgets/responses.py",
+        "moto/dsql/models.py",
+        "moto/dsql/responses.py"
+      ],
+      "future_test_paths": [
+        "tests/test_cleanrooms/test_cleanrooms.py"
+      ],
+      "test_support_paths": [],
+      "future_patch_audit_paths": [
+        "moto/cleanrooms/__init__.py",
+        "moto/cleanrooms/models.py",
+        "moto/cleanrooms/responses.py",
+        "moto/cleanrooms/urls.py",
+        "moto/cleanrooms/exceptions.py",
+        "moto/backends.py",
+        "moto/backend_index.py",
+        "setup.cfg"
+      ],
+      "regression_test_paths": [
+        "tests/test_amp",
+        "tests/test_appconfig",
+        "tests/test_budgets"
+      ],
+      "install_command": "python3 -m pip install -e . pytest freezegun",
+      "test_env": {
+        "AWS_ACCESS_KEY_ID": "fake",
+        "AWS_SECRET_ACCESS_KEY": "fake",
+        "AWS_DEFAULT_REGION": "us-east-1"
+      },
+      "future_test_command": "python3 -m pytest -q tests/test_cleanrooms/test_cleanrooms.py",
+      "regression_test_command": "python3 -m pytest -q tests/test_amp tests/test_appconfig tests/test_budgets",
+      "notes": [
+        "FUTURE 20afea38 is a squash-merged single-parent commit directly on C0 (verified with git rev-parse).",
+        "Offline gate A: the ground-truth patch applied to C0 passes 23/23 upstream tests. Blind gate B: an agent with no access to the future implementation or tests passed all 22 unit tests.",
+        "The API contract is discoverable in the environment via the botocore cleanrooms service model, so the task works under held-out tests.",
+        "C0 contains 173 service directories and cleanrooms is absent; six comparable services form the Signal extraction input.",
+        "tests/test_cleanrooms/test_server.py requires flask and flask-cors and is excluded; 22 of 23 upstream tests remain.",
+        "tests/test_dsql has 2 pre-existing failures in the reference environment; the regression selection avoids it."
+      ]
+    },
+    {
+      "task_id": "libcloud_storage_digitalocean_spaces",
+      "status": "selected",
+      "repository": {
+        "slug": "apache/libcloud",
+        "url": "https://github.com/apache/libcloud.git",
+        "license": "Apache-2.0"
+      },
+      "history": {
+        "c0": "820ff6f70cc31d25670392428383b44513e07106",
+        "future_start": "79052a080f87a436f27701db7429fa7dcb11d433",
+        "future_end": "79052a080f87a436f27701db7429fa7dcb11d433",
+        "upstream_reference": "https://github.com/apache/libcloud/pull/1129"
+      },
+      "evolution_pattern": "new_storage_backend",
+      "agent_task": "Implement DigitalOcean Spaces as an S3-compatible Libcloud storage provider. Add provider registration, supported-region validation and endpoint selection, independent AWS Signature V2/V4 connection selection, and reuse the existing S3 container and object behavior. Preserve existing storage driver conventions and backward compatibility.",
+      "signal_history_paths": [
+        "libcloud/storage/drivers/s3.py",
+        "libcloud/storage/drivers/rgw.py",
+        "libcloud/storage/drivers/google_storage.py",
+        "libcloud/storage/drivers/azure_blobs.py",
+        "libcloud/storage/drivers/cloudfiles.py"
+      ],
+      "future_test_paths": [
+        "libcloud/test/storage/test_digitalocean_spaces.py"
+      ],
+      "test_support_paths": [],
+      "future_patch_audit_paths": [
+        "libcloud/storage/drivers/digitalocean_spaces.py",
+        "libcloud/storage/providers.py",
+        "libcloud/storage/types.py"
+      ],
+      "regression_test_paths": [
+        "libcloud/test/storage/test_s3.py",
+        "libcloud/test/storage/test_rgw.py",
+        "libcloud/test/storage/test_google_storage.py",
+        "libcloud/test/storage/test_azure_blobs.py",
+        "libcloud/test/storage/test_cloudfiles.py"
+      ],
+      "test_setup": [
+        "cp libcloud/test/secrets.py-dist libcloud/test/secrets.py"
+      ],
+      "future_test_command": "python3 -m pytest -q libcloud/test/storage/test_digitalocean_spaces.py",
+      "regression_test_command": "python3 -m pytest -q libcloud/test/storage/test_s3.py libcloud/test/storage/test_rgw.py libcloud/test/storage/test_google_storage.py libcloud/test/storage/test_azure_blobs.py libcloud/test/storage/test_cloudfiles.py",
+      "notes": [
+        "The future commit is a single-parent commit directly after c0.",
+        "Its ten test methods use local objects and do not require a DigitalOcean account."
+      ]
+    },
+    {
+      "task_id": "celery_result_backend_gcs",
+      "status": "selected",
+      "repository": {
+        "slug": "celery/celery",
+        "url": "https://github.com/celery/celery.git",
+        "license": "BSD-3-Clause"
+      },
+      "history": {
+        "c0": "582e169b9d1750fd416cfa94ecfd26f43568f7b2",
+        "future_start": "06e91d913c424ddb862d9a5b50a5d3da0acdd217",
+        "future_end": "06e91d913c424ddb862d9a5b50a5d3da0acdd217",
+        "upstream_reference": "https://github.com/celery/celery/pull/8868"
+      },
+      "evolution_pattern": "new_result_storage_backend",
+      "agent_task": "Implement Google Cloud Storage as a Celery result backend. Register the gs backend URL, add gcs_* configuration, support byte keys and get/set/delete/mget operations, validate TTL and bucket lifecycle requirements, and provide a thread-safe cached client that is recreated after fork. Add optional dependency metadata and preserve existing Celery backend conventions.",
+      "signal_history_paths": [
+        "celery/backends/s3.py",
+        "celery/backends/azureblockblob.py",
+        "celery/backends/filesystem.py",
+        "celery/backends/arangodb.py",
+        "celery/backends/couchbase.py",
+        "celery/backends/cosmosdbsql.py"
+      ],
+      "future_test_paths": [
+        "t/unit/backends/test_gcs.py"
+      ],
+      "test_support_paths": [],
+      "future_patch_audit_paths": [
+        "celery/backends/gcs.py",
+        "celery/app/backends.py",
+        "celery/app/defaults.py",
+        "requirements/extras/gcs.txt",
+        "setup.py"
+      ],
+      "regression_test_paths": [
+        "t/unit/backends/test_s3.py",
+        "t/unit/backends/test_azureblockblob.py",
+        "t/unit/backends/test_filesystem.py"
+      ],
+      "install_command": "python3 -m pip install -e . -r requirements/test.txt -r requirements/extras/gcs.txt",
+      "future_test_command": "python3 -m pytest -q t/unit/backends/test_gcs.py",
+      "regression_test_command": "python3 -m pytest -q t/unit/backends/test_s3.py t/unit/backends/test_azureblockblob.py t/unit/backends/test_filesystem.py",
+      "notes": [
+        "The merge commit has one parent and is directly after c0.",
+        "The future tests mock GCS clients and blobs; they do not require cloud credentials or a live service."
+      ]
+    }
+  ]
+}
