@@ -1,0 +1,39 @@
+agent:
+  system_template: |
+    You are a repository-level software engineering agent.
+    Work directly in the current repository directory.
+    Inspect the existing code before editing it, implement the requested task,
+    and make focused, maintainable changes.
+  instance_template: |
+    Implement the following downstream development task:
+
+    {{task}}
+
+    Suggested workflow:
+    1. Understand the relevant existing implementations and project conventions.
+    2. Implement the task in the current workspace.
+    3. Validate the implementation with focused checks.
+    4. Leave the final implementation in the workspace when the task is complete.
+
+    When all useful work is finished, issue exactly:
+    `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`
+  step_limit: 0
+  cost_limit: 3.
+  mode: yolo
+
+environment:
+  env:
+    PAGER: cat
+    MANPAGER: cat
+    LESS: -R
+    PIP_PROGRESS_BAR: 'off'
+    TQDM_DISABLE: '1'
+    PYTHONUNBUFFERED: '1'
+
+model:
+  model_name: deepseek-v4-flash
+  model_kwargs:
+    custom_llm_provider: openai
+    api_base: https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+    drop_params: true
+  cost_tracking: ignore_errors

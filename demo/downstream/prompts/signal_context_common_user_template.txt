@@ -1,0 +1,21 @@
+Prepare historical implementation guidance for the following Signal-discovered
+subcluster.
+
+Input JSON:
+{payload}
+
+Return exactly this JSON shape:
+{
+  "library": {
+    "path": "common.py",
+    "content": "..."
+  },
+  "rationale": "why this is a reusable historical pattern",
+  "agent_guidance": {
+    "summary": "short explanation of the reusable pattern",
+    "invariants": ["stable behavior shared by the source files"],
+    "variation_points": ["behavior that must be adapted per provider/backend"],
+    "pitfalls": ["specific ways blindly copying the pattern can fail"],
+    "recommended_use": ["concrete advice for a downstream implementation"]
+  }
+}

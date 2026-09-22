@@ -161,8 +161,12 @@ def validate_manifest(payload: dict[str, Any]) -> None:
             if not SHA_RE.fullmatch(value):
                 raise ValueError(f"tasks[{index}].history.{key} must be a full SHA")
         for field in ("signal_history_paths", "future_test_paths", "test_support_paths",
-                      "future_patch_audit_paths", "regression_test_paths"):
-            for value in task.get(field, []):
+                      "future_patch_audit_paths", "regression_test_paths",
+                      "future_test_adapter", "regression_test_adapter"):
+            values = task.get(field, [])
+            if isinstance(values, str):
+                values = [values]
+            for value in values:
                 _safe_path(value)
 
 
@@ -424,6 +428,27 @@ def _command_failed(result: CommandResult) -> bool:
     return result.timed_out or result.returncode != 0
 
 
+def _format_test_command(task: dict[str, Any], suite: str, workspace: Path,
+                         result_dir: Path) -> str:
+    """Expand runner-owned paths in a task's test command.
+
+    A test adapter lives outside the agent workspace so it can provide a
+    stable evaluator-facing contract without exposing the held-out test
+    implementation to the coding agent.
+    """
+    command = task[f"{suite}_test_command"]
+    replacements = {
+        "{workspace}": str(workspace),
+        "{result_dir}": str(result_dir),
+    }
+    adapter = task.get(f"{suite}_test_adapter")
+    if adapter:
+        replacements[f"{{{suite}_test_adapter}}"] = str((ROOT / _safe_path(adapter)).resolve())
+    for placeholder, value in replacements.items():
+        command = command.replace(placeholder, value)
+    return command
+
+
 def _run_task_setup(task: dict[str, Any], workspace: Path, result_dir: Path,
                     timeout_sec: float) -> tuple[dict[str, Any], str | None]:
     """Run task-declared environment setup before starting the agent.
@@ -476,6 +501,33 @@ def _run_task_setup(task: dict[str, Any], workspace: Path, result_dir: Path,
     return records, None
 
 
+def _copy_signal_context(source_root: Path, workspace: Path) -> Path:
+    """Copy only the agent-facing Signal pack into the C0 workspace.
+
+    The audit ``manifest.json`` (which carries source and future commit
+    hashes) deliberately stays behind; ``SKILL.md`` already indexes every
+    file the agent needs.
+    """
+    source_root = source_root.resolve()
+    if not source_root.is_dir():
+        raise FileNotFoundError(f"signal context directory not found: {source_root}")
+    destination = workspace / ".downstream" / "signal-context"
+    if destination.exists():
+        raise FileExistsError(f"refusing to overwrite signal context: {destination}")
+    required_files = ("SKILL.md",)
+    required_dirs = ("patterns", "snippets")
+    if any(not (source_root / name).is_file() for name in required_files):
+        raise FileNotFoundError(f"incomplete signal context pack: {source_root}")
+    if any(not (source_root / name).is_dir() for name in required_dirs):
+        raise FileNotFoundError(f"incomplete signal context pack: {source_root}")
+    destination.mkdir(parents=True, exist_ok=True)
+    for name in required_files:
+        shutil.copy2(source_root / name, destination / name)
+    for name in required_dirs:
+        shutil.copytree(source_root / name, destination / name)
+    return destination
+
+
 def _untracked_files(workspace: Path) -> set[str]:
     result = _git(workspace, ["ls-files", "--others", "--exclude-standard", "-z"])
     if result.returncode != 0:
@@ -486,23 +538,42 @@ def _untracked_files(workspace: Path) -> set[str]:
 def run_agent_command(*, task_id: str, variant: str, workspace: Path,
                       agent_command: str | Sequence[str], result_dir: Path,
                       artifact_root: Path | None = None,
+                      signal_context_dir: Path | None = None,
                       manifest: Path = DEFAULT_MANIFEST, timeout_sec: float = 1800,
                       model: str = "external-agent") -> dict[str, Any]:
     workspace = workspace.resolve()
     result_dir = result_dir.resolve()
     if artifact_root is not None:
         artifact_root = artifact_root.resolve()
+    if signal_context_dir is not None:
+        signal_context_dir = signal_context_dir.resolve()
+    if variant == "signal" and signal_context_dir is None:
+        raise ValueError("signal variant requires signal_context_dir")
+    if variant == "direct" and signal_context_dir is not None:
+        raise ValueError("direct variant must not receive signal_context_dir")
     task = load_task(task_id, manifest)
     result_dir.mkdir(parents=True, exist_ok=True)
+    signal_context_file = None
+    if signal_context_dir is not None:
+        signal_context_file = _copy_signal_context(signal_context_dir, workspace) / "SKILL.md"
+    task_prompt = task["agent_task"].strip()
+    if signal_context_file is not None:
+        task_prompt += (
+            "\n\nImplementation guidance distilled from comparable services in this "
+            f"repository is available at {signal_context_file.relative_to(workspace)}. "
+            "Consult it while implementing."
+        )
     task_file = result_dir / "TASK.md"
-    task_file.write_text(task["agent_task"].strip() + "\n", encoding="utf-8")
+    task_file.write_text(task_prompt + "\n", encoding="utf-8")
     trajectory_file = result_dir / "agent" / "trajectory.json"
     trajectory_file.parent.mkdir(parents=True, exist_ok=True)
     raw = shlex.split(agent_command) if isinstance(agent_command, str) else list(agent_command)
     argv = [item.format(
-        task_file=str(task_file), task_prompt=task["agent_task"].strip(),
+        task_file=str(task_file), task_prompt=task_prompt,
         workspace=str(workspace), task_id=task_id,
         result_dir=str(result_dir), trajectory_file=str(trajectory_file),
+        signal_context_dir=str(signal_context_file.parent) if signal_context_file else "",
+        signal_context_file=str(signal_context_file) if signal_context_file else "",
     ) for item in raw]
     result = _empty_result(task_id, variant, model)
     started = time.monotonic()
@@ -522,8 +593,14 @@ def run_agent_command(*, task_id: str, variant: str, workspace: Path,
     base_result = _git(workspace, ["rev-parse", "HEAD"])
     base_commit = base_result.stdout.strip() if base_result.returncode == 0 else None
     baseline_untracked = _untracked_files(workspace)
-    env = {"DOWNSTREAM_TASK_FILE": str(task_file), "DOWNSTREAM_TASK_ID": task_id,
-           "DOWNSTREAM_VARIANT": variant}
+    # Only the task file is exposed to the agent process; task/variant
+    # identifiers would tell it which arm of the experiment it is in.
+    env = {"DOWNSTREAM_TASK_FILE": str(task_file)}
+    if signal_context_file is not None:
+        env["DOWNSTREAM_SIGNAL_CONTEXT_DIR"] = str(signal_context_file.parent)
+        env["DOWNSTREAM_SIGNAL_CONTEXT_FILE"] = str(signal_context_file)
+        result["artifacts"]["signal_context"] = str(signal_context_file.parent)
+        result["artifacts"]["signal_context_source"] = str(signal_context_dir)
     try:
         agent = run_command(
             argv, workspace, timeout_sec, env=env,
@@ -552,10 +629,11 @@ def run_agent_command(*, task_id: str, variant: str, workspace: Path,
         result["artifacts"]["injected_tests"] = inject_tests(artifact_root, workspace)
     evaluation_started = time.monotonic()
     test_env = {key: str(value) for key, value in task.get("test_env", {}).items()}
+    test_env.setdefault("DOWNSTREAM_WORKSPACE", str(workspace))
     all_green = True
     suite_timed_out = False
     for suite in ("future", "regression"):
-        test_argv = shlex.split(task[f"{suite}_test_command"])
+        test_argv = shlex.split(_format_test_command(task, suite, workspace, result_dir))
         junit = result_dir / suite / "junit.xml"
         if any(item.endswith("pytest") or item == "pytest" for item in test_argv):
             test_argv.append(f"--junitxml={junit}")

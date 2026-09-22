@@ -24,7 +24,7 @@
         "upstream_reference": "https://github.com/getmoto/moto/pull/10113"
       },
       "evolution_pattern": "new_service_implementation",
-      "agent_task": "Implement the AWS Clean Rooms Service mock for this moto checkout. Follow the cleanrooms botocore service model as the API contract: collaborations, memberships, and configured tables with full CRUD, pagination, and resource tagging, with unknown resources raising the modeled not-found error. Create moto/cleanrooms/ with the same layout as existing services and register the backend in moto/backends.py and moto/backend_index.py. Preserve existing service conventions and backward compatibility.",
+      "agent_task": "Implement the AWS Clean Rooms Service mock for this moto checkout. The public contract is the botocore cleanrooms service model exposed through boto3.client('cleanrooms'): collaborations, memberships, and configured tables with full CRUD, pagination, resource tagging, and modeled not-found errors. Create moto/cleanrooms/ with the same layout as existing services and register the backend in moto/backends.py and moto/backend_index.py. Tests use the boto3 service surface; internal model, response, and backend class names are implementation details unless required by an existing registry. Preserve existing service conventions and backward compatibility.",
       "signal_history_paths": [
         "moto/s3tables/models.py",
         "moto/s3tables/responses.py",
@@ -90,7 +90,7 @@
         "upstream_reference": "https://github.com/apache/libcloud/pull/1129"
       },
       "evolution_pattern": "new_storage_backend",
-      "agent_task": "Implement DigitalOcean Spaces as an S3-compatible Libcloud storage provider. Add provider registration, supported-region validation and endpoint selection, independent AWS Signature V2/V4 connection selection, and reuse the existing S3 container and object behavior. Preserve existing storage driver conventions and backward compatibility.",
+      "agent_task": "Implement DigitalOcean Spaces as an S3-compatible Libcloud storage provider. Public contract: register Provider.DIGITALOCEAN_SPACES so get_driver(Provider.DIGITALOCEAN_SPACES) returns the driver; support the region argument with validation and the corresponding DigitalOcean Spaces endpoint; support signature_version='2' and signature_version='4'; and preserve the existing S3 container and object behavior. The public contract is the provider registry, constructor behavior, endpoint selection, signature behavior, and inherited S3 operations. Connection class names and other internal implementation names are up to you and must not be required by callers. Preserve existing storage driver conventions and backward compatibility.",
       "signal_history_paths": [
         "libcloud/storage/drivers/s3.py",
         "libcloud/storage/drivers/rgw.py",
@@ -117,7 +117,8 @@
       "test_setup": [
         "cp libcloud/test/secrets.py-dist libcloud/test/secrets.py"
       ],
-      "future_test_command": "python3 -m pytest -q libcloud/test/storage/test_digitalocean_spaces.py",
+      "future_test_adapter": "demo/downstream/adapters/libcloud_storage_digitalocean_spaces.py",
+      "future_test_command": "python3 -m pytest -q {future_test_adapter}",
       "regression_test_command": "python3 -m pytest -q libcloud/test/storage/test_s3.py libcloud/test/storage/test_rgw.py libcloud/test/storage/test_google_storage.py libcloud/test/storage/test_azure_blobs.py libcloud/test/storage/test_cloudfiles.py",
       "notes": [
         "The future commit is a single-parent commit directly after c0.",
@@ -139,7 +140,7 @@
         "upstream_reference": "https://github.com/celery/celery/pull/8868"
       },
       "evolution_pattern": "new_result_storage_backend",
-      "agent_task": "Implement Google Cloud Storage as a Celery result backend. Register the gs backend URL, add gcs_* configuration, support byte keys and get/set/delete/mget operations, validate TTL and bucket lifecycle requirements, and provide a thread-safe cached client that is recreated after fork. Add optional dependency metadata and preserve existing Celery backend conventions.",
+      "agent_task": "Implement Google Cloud Storage as a Celery result backend. Public contract: celery.app.backends.by_url('gs://...') must resolve the backend; register the gs backend URL, add gcs_* configuration, support byte keys and get/set/delete/mget operations, validate TTL and bucket lifecycle requirements, and provide a thread-safe cached client that is recreated after fork. The public behavior is the backend registry and backend methods; backend class names, helper names, and other private implementation details are not part of the API unless required by the registry. Add optional dependency metadata and preserve existing Celery backend conventions.",
       "signal_history_paths": [
         "celery/backends/s3.py",
         "celery/backends/azureblockblob.py",
@@ -165,7 +166,8 @@
         "t/unit/backends/test_filesystem.py"
       ],
       "install_command": "python3 -m pip install -e . -r requirements/test.txt -r requirements/extras/gcs.txt",
-      "future_test_command": "python3 -m pytest -q t/unit/backends/test_gcs.py",
+      "future_test_adapter": "demo/downstream/adapters/celery_gcs.py",
+      "future_test_command": "python3 -m pytest -q {future_test_adapter}",
       "regression_test_command": "python3 -m pytest -q t/unit/backends/test_s3.py t/unit/backends/test_azureblockblob.py t/unit/backends/test_filesystem.py",
       "notes": [
         "The merge commit has one parent and is directly after c0.",
