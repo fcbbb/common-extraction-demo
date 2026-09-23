@@ -58,7 +58,7 @@
         "tests/test_appconfig",
         "tests/test_budgets"
       ],
-      "install_command": "python3 -m pip install -e . pytest freezegun",
+      "install_command": "python3 -m pip install -e \".[server]\" pytest freezegun",
       "test_env": {
         "AWS_ACCESS_KEY_ID": "fake",
         "AWS_SECRET_ACCESS_KEY": "fake",

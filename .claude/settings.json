@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /home/xiaoheng/demo_common_extraction diff --stat)"
+    ]
+  }
+}

@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 
 from demo.downstream.core import _copy_signal_context
 from demo.downstream.signal_context import (
+    _prompt_invalidation,
     _safe_stem,
     _skill_markdown,
     _validate_common_reference,
@@ -62,6 +63,19 @@ class DownstreamSignalContextTests(unittest.TestCase):
         self.assertEqual(_safe_stem("../escape/attempt", 1, used), "escape_attempt")
         self.assertEqual(_safe_stem("0_0", 2, used), "0_0_2")
         self.assertEqual(_safe_stem("", 3, used), "sub_3")
+
+    def test_prompt_invalidation_rules(self) -> None:
+        current = {
+            "gate_system": "g1", "gate_user": "g2",
+            "common_system": "c1", "common_user": "c2",
+        }
+        # No previous meta (fresh or pre-meta work dir): gate provenance unknown.
+        self.assertEqual(_prompt_invalidation(None, current), (True, True))
+        self.assertEqual(_prompt_invalidation(dict(current), current), (False, False))
+        gate_changed = dict(current, gate_system="g3")
+        self.assertEqual(_prompt_invalidation(gate_changed, current), (True, True))
+        common_changed = dict(current, common_user="c3")
+        self.assertEqual(_prompt_invalidation(common_changed, current), (False, True))
 
     def test_reference_validation_grounds_imports(self) -> None:
         members = {"file_000.py": "import json\n\n\ndef dumps_pair(a, b):\n    return json.dumps([a, b])\n"}

@@ -17,6 +17,7 @@ import selectors
 import shlex
 import shutil
 import subprocess
+import sys
 import tarfile
 import time
 import xml.etree.ElementTree as ET
@@ -28,6 +29,9 @@ from typing import Any, Mapping, Sequence
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MANIFEST = ROOT / "demo" / "downstream" / "tasks.json"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+MISSING_MODULE_RE = re.compile(
+    r"(?:ModuleNotFoundError|ImportError): No module named ['\"]([^'\"]+)['\"]"
+)
 TASK_STATUS = {"selected", "gates_passed", "ready"}
 REQUIRED_FIELDS = {
     "task_id", "repository", "history", "evolution_pattern", "agent_task",
@@ -447,6 +451,127 @@ def _format_test_command(task: dict[str, Any], suite: str, workspace: Path,
     for placeholder, value in replacements.items():
         command = command.replace(placeholder, value)
     return command
+
+
+_MODULE_DISTRIBUTIONS = {
+    "bs4": "beautifulsoup4",
+    "cors": "flask-cors",
+    "dateutil": "python-dateutil",
+    "dotenv": "python-dotenv",
+    "flask_cors": "flask-cors",
+    "google": "google-cloud-core",
+    "PIL": "Pillow",
+    "yaml": "PyYAML",
+}
+
+
+def _missing_modules(output: str) -> list[str]:
+    """Return unique top-level imports reported as missing by Python."""
+    modules: list[str] = []
+    for match in MISSING_MODULE_RE.finditer(output):
+        module = match.group(1).split(".", 1)[0]
+        if module not in modules:
+            modules.append(module)
+    return modules
+
+
+def _distribution_for_module(module: str) -> str | None:
+    """Map a missing import to a conservative pip distribution name.
+
+    Most Python packages use the import name as their distribution name.  The
+    small alias table covers common exceptions; callers still validate the
+    result before passing it to pip.
+    """
+    if module in getattr(sys, "stdlib_module_names", set()):
+        return None
+    distribution = _MODULE_DISTRIBUTIONS.get(module, module.replace("_", "-"))
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", distribution):
+        return None
+    return distribution
+
+
+def _is_local_module(module: str, workspace: Path) -> bool:
+    relative = Path(*module.split("."))
+    return (workspace / f"{relative}.py").exists() or (workspace / relative).is_dir()
+
+
+def _pytest_collection_command(command: str) -> list[str] | None:
+    """Turn a pytest task command into a cheap import/dependency probe."""
+    argv = shlex.split(command)
+    if not any(item == "pytest" or item.endswith("/pytest") for item in argv):
+        return None
+    if "--collect-only" not in argv:
+        argv.append("--collect-only")
+    return argv
+
+
+def _ensure_test_dependencies(
+    task: dict[str, Any],
+    suite: str,
+    workspace: Path,
+    result_dir: Path,
+    timeout_sec: float,
+    *,
+    phase: str,
+    env: Mapping[str, str] | None = None,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Probe pytest imports and install packages for reported missing modules.
+
+    This is intentionally a best-effort preflight.  It only reacts to Python's
+    explicit ``No module named ...`` diagnostics, limits retries, and leaves
+    assertion/collection errors for the real suite.  It also does not probe
+    non-pytest adapters, whose dependencies remain task-owned.
+    """
+    command = _format_test_command(task, suite, workspace, result_dir)
+    probe_argv = _pytest_collection_command(command)
+    if probe_argv is None:
+        return [], None
+
+    records: list[dict[str, Any]] = []
+    installed: set[str] = set()
+    probe_dir = result_dir / "dependency-probe" / phase / suite
+    for attempt in range(3):
+        probe = run_command(
+            probe_argv,
+            workspace,
+            timeout_sec,
+            env=env,
+            artifact_dir=probe_dir / f"probe-{attempt}",
+        )
+        missing = [
+            module for module in _missing_modules(probe.stdout + "\n" + probe.stderr)
+            if not _is_local_module(module, workspace)
+        ]
+        packages = [
+            package for module in missing
+            if (package := _distribution_for_module(module)) is not None
+            and package not in installed
+        ]
+        records.append({
+            "phase": phase,
+            "suite": suite,
+            "attempt": attempt,
+            "probe": asdict(probe),
+            "missing_modules": missing,
+            "packages": packages,
+        })
+        if probe.returncode == 0 and not probe.timed_out:
+            return records, None
+        if not packages:
+            return records, None
+
+        install = run_command(
+            [sys.executable, "-m", "pip", "install", *packages],
+            workspace,
+            timeout_sec,
+            env=env,
+            artifact_dir=probe_dir / f"install-{attempt}",
+        )
+        records[-1]["install"] = asdict(install)
+        if _command_failed(install):
+            return records, f"{phase}_{suite}_dependency_install_failed"
+        installed.update(packages)
+    return records, None
 
 
 def _run_task_setup(task: dict[str, Any], workspace: Path, result_dir: Path,

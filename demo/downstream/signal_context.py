@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import hashlib
 import re
 import subprocess
 from pathlib import Path
@@ -40,7 +41,44 @@ ROOT = Path(__file__).resolve().parents[2]
 PROMPT_DIR = ROOT / "demo" / "downstream" / "prompts"
 CONTEXT_SYSTEM = PROMPT_DIR / "signal_context_common_system.txt"
 CONTEXT_USER = PROMPT_DIR / "signal_context_common_user_template.txt"
+CONTEXT_GATE_SYSTEM = PROMPT_DIR / "signal_context_gate_system.txt"
+CONTEXT_GATE_USER = PROMPT_DIR / "signal_context_gate_user_template.txt"
 _UNSAFE_STEM_RE = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def _prompt_meta() -> dict[str, str]:
+    """Hash the pack's prompts so edits invalidate cached pipeline stages."""
+    return {
+        "gate_system": hashlib.sha256(CONTEXT_GATE_SYSTEM.read_bytes()).hexdigest(),
+        "gate_user": hashlib.sha256(CONTEXT_GATE_USER.read_bytes()).hexdigest(),
+        "common_system": hashlib.sha256(CONTEXT_SYSTEM.read_bytes()).hexdigest(),
+        "common_user": hashlib.sha256(CONTEXT_USER.read_bytes()).hexdigest(),
+    }
+
+
+def _prompt_invalidation(
+    previous_meta: dict[str, Any] | None,
+    current_meta: dict[str, str],
+) -> tuple[bool, bool]:
+    """Return (rerun_gate, clear_generation_caches) given a prompt change.
+
+    A gate prompt change reruns the gate; any gate or common prompt change
+    clears the per-subcluster generation caches, because a gate rerun
+    redefines subcluster membership and a common prompt change invalidates
+    the cached payloads. No previous meta (fresh or pre-meta work directory)
+    means the gate cache provenance is unknown, so the gate reruns.
+    """
+    if previous_meta is None:
+        return True, True
+    gate_changed = any(
+        previous_meta.get(key) != value
+        for key, value in current_meta.items() if key.startswith("gate_")
+    )
+    common_changed = any(
+        previous_meta.get(key) != value
+        for key, value in current_meta.items() if key.startswith("common_")
+    )
+    return gate_changed, gate_changed or common_changed
 
 
 def _safe_stem(raw: str, index: int, used: set[str]) -> str:
@@ -294,7 +332,10 @@ def materialize_signal_context(
     Each pattern's common.py is screened by ``_validate_common_reference``
     (compile plus import/name grounding against the member sources); the
     screen removes hallucinated reference code, it does not certify that the
-    pattern helps the downstream agent.
+    pattern helps the downstream agent. The gate runs with
+    downstream-specific judgment prompts; editing any pack prompt records a
+    hash mismatch that reruns the gate and clears the generation caches on
+    the next attempt.
     """
     task = load_task(task_id, manifest)
     context_root = context_root.resolve()
@@ -368,7 +409,17 @@ def materialize_signal_context(
         "api_timeout_sec": api_timeout_sec,
         "max_output_tokens": max_output_tokens,
         "gate_workers": max(1, gate_workers),
+        "gate_system_prompt": str(CONTEXT_GATE_SYSTEM),
+        "gate_user_prompt": str(CONTEXT_GATE_USER),
     }
+    current_meta = _prompt_meta()
+    rerun_gate, clear_generation_caches = _prompt_invalidation(
+        load_json_if_exists(work_root / "prompt_meta.json"), current_meta)
+    if clear_generation_caches:
+        for payload_path in results_dir.glob("signal/0/*/context_common_payload.json"):
+            payload_path.unlink()
+        for validation_path in results_dir.glob("signal/0/*/validation.json"):
+            validation_path.unlink()
     signal_status = discover_cluster(
         cluster,
         dataset_dir,
@@ -380,8 +431,11 @@ def materialize_signal_context(
         force_semantic=False,
         resume=True,
         gate_cfg=gate_cfg,
-        rerun_gate=False,
+        rerun_gate=rerun_gate,
     )
+    # Record the meta only after the gate output exists, so a crash during
+    # the gate keeps the old meta and the gate reruns on the next attempt.
+    write_json(work_root / "prompt_meta.json", current_meta)
     discovery = load_json_if_exists(results_dir / "signal" / "0" / "discovery.json")
     if discovery is None:
         raise RuntimeError(f"Signal discovery did not produce discovery.json: {signal_status}")

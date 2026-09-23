@@ -276,10 +276,15 @@ def _call_gate(
             }
         ],
     }
-    system_prompt = read_text(SYSTEM_PATH)
-    user_prompt = build_user_prompt(USER_PATH, payload)
+    # Callers may override the judgment prompts (e.g. demo.downstream uses a
+    # family-pattern criterion instead of refactor token economics); the
+    # defaults keep the original Signal pipeline behavior.
+    system_path = Path(cfg.get("gate_system_prompt", SYSTEM_PATH))
+    user_path = Path(cfg.get("gate_user_prompt", USER_PATH))
+    system_prompt = read_text(system_path)
+    user_prompt = build_user_prompt(user_path, payload)
     schema_hint = '{"candidate_id":"c0","groups":[{"members":["a.py","b.py"],"shared_concept":"...","shared_interface":[{"name":"f","signature_guess":"f(...)","role":"..."}],"key_variations":["..."]}]}'
-    prompt_paths = {"system": str(SYSTEM_PATH), "user_template": str(USER_PATH)}
+    prompt_paths = {"system": str(system_path), "user_template": str(user_path)}
     errors: list[str] = []
     for attempt in range(2):
         final = user_prompt
