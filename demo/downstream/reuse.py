@@ -14,7 +14,7 @@ from typing import Any, Mapping
 
 QUALIFICATION_SCHEMA = "downstream-signal-component-qualification-v1"
 RECEIPT_SCHEMA = "downstream-signal-reuse-receipts-v1"
-QUALIFIER_VERSION = 1
+QUALIFIER_VERSION = 2
 
 
 def _safe_relative(value: str) -> PurePosixPath:
@@ -165,18 +165,7 @@ def qualify_signal_pack(
                 "failure_category": "qualification_error",
                 "detail": f"{type(exc).__name__}: {exc}",
             }
-        expected_commit = task["history"]["c0"]
-        result["source_commit"] = expected_commit
-        if (
-            "snapshot_commit" in result
-            and result.get("snapshot_commit") != expected_commit
-        ):
-            result["placeable"] = False
-            result["failure_category"] = "workspace_commit_mismatch"
-            result["detail"] = (
-                f"qualification snapshot {result.get('snapshot_commit')!r} "
-                f"does not match task C0 {expected_commit!r}"
-            )
+        result["source_commit"] = task["history"]["c0"]
         result["component_sha256"] = _sha256(component_path)
         result["qualification_level"] = (
             "import_and_member_tests"
