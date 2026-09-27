@@ -440,6 +440,8 @@ def _empty_result(task_id: str, variant: str, model: str) -> dict[str, Any]:
                       "api_calls": 0, "agent_turns": 0, "tool_calls": 0,
                       "cost_usd": 0.0, "agent_wall_time_sec": 0.0,
                       "signal_context_generation_wall_time_sec": 0.0,
+                      "signal_component_qualification_wall_time_sec": 0.0,
+                      "signal_component_deployment_wall_time_sec": 0.0,
                       "evaluation_wall_time_sec": 0.0, "wall_time_sec": 0.0},
             "code": {"changed_files": 0, "patch_lines": 0}, "artifacts": {}, "error": None}
 
@@ -792,6 +794,7 @@ def run_agent_command(*, task_id: str, variant: str, workspace: Path,
                       artifact_root: Path | None = None,
                       signal_context_dir: Path | None = None,
                       signal_context_generation_wall_time_sec: float = 0.0,
+                      signal_delivery_mode: str = "reference",
                       manifest: Path = DEFAULT_MANIFEST, timeout_sec: float = 1800,
                       references_root: Path | None = DEFAULT_REFERENCES,
                       model: str = "external-agent") -> dict[str, Any]:
@@ -805,35 +808,16 @@ def run_agent_command(*, task_id: str, variant: str, workspace: Path,
         raise ValueError("signal variant requires signal_context_dir")
     if variant == "direct" and signal_context_dir is not None:
         raise ValueError("direct variant must not receive signal_context_dir")
+    if signal_delivery_mode not in {"reference", "reuse"}:
+        raise ValueError(f"unsupported Signal delivery mode: {signal_delivery_mode}")
+    if variant == "direct" and signal_delivery_mode != "reference":
+        raise ValueError("direct variant cannot use Signal component delivery")
     task = load_task(task_id, manifest)
     result_dir.mkdir(parents=True, exist_ok=True)
     signal_context_file = None
-    if signal_context_dir is not None:
-        signal_context_file = _copy_signal_context(signal_context_dir, workspace) / "SKILL.md"
-    task_prompt = task["agent_task"].strip()
-    if signal_context_file is not None:
-        task_prompt += (
-            "\n\nA reusable common component distilled from historical code in this "
-            f"repository is indexed at {signal_context_file.relative_to(workspace)}. "
-            "Read the index and decide whether its common components apply to this "
-            "task. Use the repository-root paths in the index to inspect relevant "
-            "components and source evidence, and reuse the parts that fit. Any "
-            "interface mismatch will be caught by the tests that run after you "
-            "finish, so there is no need to cross-check the components against "
-            "the repository yourself."
-        )
-    task_file = result_dir / "TASK.md"
-    task_file.write_text(task_prompt + "\n", encoding="utf-8")
+    reuse_delivery: dict[str, Any] | None = None
     trajectory_file = result_dir / "agent" / "trajectory.json"
     trajectory_file.parent.mkdir(parents=True, exist_ok=True)
-    raw = shlex.split(agent_command) if isinstance(agent_command, str) else list(agent_command)
-    argv = [item.format(
-        task_file=str(task_file), task_prompt=task_prompt,
-        workspace=str(workspace), task_id=task_id,
-        result_dir=str(result_dir), trajectory_file=str(trajectory_file),
-        signal_context_dir=str(signal_context_file.parent) if signal_context_file else "",
-        signal_context_file=str(signal_context_file) if signal_context_file else "",
-    ) for item in raw]
     result = _empty_result(task_id, variant, model)
     result["usage"]["signal_context_generation_wall_time_sec"] = max(
         0.0, float(signal_context_generation_wall_time_sec)
@@ -855,11 +839,112 @@ def run_agent_command(*, task_id: str, variant: str, workspace: Path,
         result["usage"]["wall_time_sec"] = time.monotonic() - started
         (result_dir / "run.json").write_text(json.dumps(result, indent=2) + "\n")
         return result
-    # Establish the comparison point after setup, so dependency/test setup
-    # changes are not attributed to the coding agent.
+
+    if signal_context_dir is not None:
+        if signal_delivery_mode == "reuse":
+            result["signal_reuse"] = {"mode": "reuse", "components": []}
+            reuse_phase = "qualification"
+            try:
+                from .reuse import install_qualified_components, qualify_signal_pack
+
+                qualification_started = time.monotonic()
+                qualification = qualify_signal_pack(
+                    task=task,
+                    pack_root=signal_context_dir,
+                    workspace=workspace.parent,
+                    tasks_manifest=manifest,
+                )
+                result["usage"]["signal_component_qualification_wall_time_sec"] = (
+                    time.monotonic() - qualification_started
+                )
+                result["artifacts"]["signal_qualification"] = str(
+                    signal_context_dir / "qualification.json"
+                )
+                result["signal_reuse"]["qualification_identity"] = qualification.get("identity")
+                reuse_phase = "deployment"
+                deployment_started = time.monotonic()
+                reuse_delivery = install_qualified_components(
+                    task=task,
+                    pack_root=signal_context_dir,
+                    workspace=workspace,
+                    tasks_manifest=manifest,
+                )
+                result["usage"]["signal_component_deployment_wall_time_sec"] = (
+                    time.monotonic() - deployment_started
+                )
+                result["signal_reuse"]["components"] = reuse_delivery["components"]
+                signal_context_file = Path(reuse_delivery["context_file"])
+            except Exception as exc:
+                result["status"] = "error"
+                result["error"] = f"signal_component_{reuse_phase}_failed: {exc}"
+                result["usage"]["wall_time_sec"] = time.monotonic() - started
+                (result_dir / "run.json").write_text(json.dumps(result, indent=2) + "\n")
+                return result
+        else:
+            signal_context_file = _copy_signal_context(
+                signal_context_dir, workspace
+            ) / "SKILL.md"
+            result["signal_reuse"] = {"mode": "reference", "components": []}
+
+    task_prompt = task["agent_task"].strip()
+    if signal_context_file is not None:
+        if signal_delivery_mode == "reuse":
+            components = reuse_delivery["components"] if reuse_delivery else []
+            modules = ", ".join(
+                f"{item['module']} ({item['destination']})" for item in components
+            )
+            task_prompt += (
+                "\n\nValidated Signal common components have been installed in this "
+                f"workspace and are listed at {signal_context_file.relative_to(workspace)}. "
+                f"Import or extend a relevant component from: {modules}. The Signal "
+                "production checks cover grounding, import, and placeability; matching "
+                "existing member tests were run when discoverable. Follow the documented "
+                "variation points and implement the task-specific behavior and repository "
+                "integration. The held-out task tests are not available until you finish."
+            )
+        else:
+            task_prompt += (
+                "\n\nHistorical Signal patterns and source examples are provided at "
+                f"{signal_context_file.relative_to(workspace)}. Treat them as reference "
+                "material, use only patterns relevant to the task, and follow the task "
+                "contract and repository conventions."
+            )
+    task_file = result_dir / "TASK.md"
+    task_file.write_text(task_prompt + "\n", encoding="utf-8")
+    raw = shlex.split(agent_command) if isinstance(agent_command, str) else list(agent_command)
+    argv = [item.format(
+        task_file=str(task_file), task_prompt=task_prompt,
+        workspace=str(workspace), task_id=task_id,
+        result_dir=str(result_dir), trajectory_file=str(trajectory_file),
+        signal_context_dir=str(signal_context_file.parent) if signal_context_file else "",
+        signal_context_file=str(signal_context_file) if signal_context_file else "",
+    ) for item in raw]
+
+    # Establish the comparison point after setup and Signal deployment, so
+    # dependencies and preinstalled common modules are not counted as agent edits.
     base_result = _git(workspace, ["rev-parse", "HEAD"])
     base_commit = base_result.stdout.strip() if base_result.returncode == 0 else None
     baseline_untracked = _untracked_files(workspace)
+
+    def write_reuse_receipts() -> None:
+        if reuse_delivery is None or not base_commit:
+            return
+        from .reuse import collect_reuse_receipts, _write_json_atomic
+
+        try:
+            receipts = collect_reuse_receipts(
+                workspace=workspace,
+                base_commit=base_commit,
+                baseline_untracked=baseline_untracked,
+                components=reuse_delivery["components"],
+            )
+            receipt_path = result_dir / "reuse_receipts.json"
+            _write_json_atomic(receipt_path, receipts)
+            result["artifacts"]["reuse_receipts"] = str(receipt_path)
+            result["signal_reuse"]["receipts"] = receipts
+        except Exception as exc:
+            result["signal_reuse"]["receipt_error"] = f"{type(exc).__name__}: {exc}"
+
     # Only the task file is exposed to the agent process; task/variant
     # identifiers would tell it which arm of the experiment it is in. The
     # venv's bin leads PATH so the agent's own shell commands resolve
@@ -879,6 +964,7 @@ def run_agent_command(*, task_id: str, variant: str, workspace: Path,
     except OSError as exc:
         result["status"] = "error"
         result["error"] = f"agent_command_not_started: {exc}"
+        write_reuse_receipts()
         result["usage"]["wall_time_sec"] = time.monotonic() - started
         (result_dir / "run.json").write_text(json.dumps(result, indent=2) + "\n")
         return result
@@ -886,6 +972,7 @@ def run_agent_command(*, task_id: str, variant: str, workspace: Path,
     result["artifacts"]["trajectory"] = str(trajectory_file)
     if base_commit:
         result["code"] = _code_change_stats(workspace, base_commit, baseline_untracked)
+    write_reuse_receipts()
     result["usage"].update(_trajectory_usage(trajectory_file))
     result["usage"]["agent_wall_time_sec"] = agent.wall_time_sec
     result["usage"]["wall_time_sec"] = time.monotonic() - started

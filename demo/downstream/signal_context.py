@@ -1,12 +1,10 @@
 """Build task-local Signal guidance without modifying a downstream C0 tree.
 
-This is deliberately a side path for ``demo.downstream``. The existing Signal
-pipeline remains unchanged; this module reuses its discovery and common
-extraction machinery, then renders the result as read-only agent context.
-The pack's common.py is reference material for writing new code, not a
-refactor to apply, so validation checks that it compiles and is grounded in
-the member sources (no invented imports or names) instead of running the
-pipeline's member-rewrite equivalence procedure.
+This is deliberately a side path for ``demo.downstream``. It reuses Signal's
+discovery and common extraction machinery, then renders a task-local context
+pack. Generation validates syntax and grounding against member sources. The
+optional reuse delivery performs a separate producer-side import/placeability
+qualification before installing a common module into a C0 workspace.
 """
 
 from __future__ import annotations
@@ -608,6 +606,7 @@ def materialize_signal_context(
             "guidance_path": str(guidance_path.relative_to(work_root)),
             "snippets_path": str(snippets_path.relative_to(work_root)),
             "rationale": common_payload.get("rationale", ""),
+            "api": validation.get("defined_names", []),
             "validation": "ok",
         })
         status(f"signal context: subcluster {sub_id} validated")

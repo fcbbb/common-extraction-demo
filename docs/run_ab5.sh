@@ -4,6 +4,7 @@
 # 两个变体各提交一个 job 并行(各占 1 张卡):
 #   VARIANT=direct sbatch docs/run_ab5.sh
 #   VARIANT=signal sbatch docs/run_ab5.sh
+#   VARIANT=signal SIGNAL_DELIVERY=reuse sbatch docs/run_ab5.sh
 # 变体由提交时的环境变量选择;若 .env 存在则先加载(DEEPSEEK_API_KEY 等)。
 # 语义嵌入 worker 通过 DEMO_EMBED_PYTHON 指向带 torch 的 conda 环境(agent env
 # 的 torch 2.8.0+cu128 在 535 驱动上实测可用),不依赖本仓库 python。
@@ -24,6 +25,7 @@ PROJECT_DIR="${PROJECT_DIR:-${SLURM_SUBMIT_DIR:-$(pwd)}}"
 cd "$PROJECT_DIR"
 
 VARIANT="${VARIANT:-direct}"   # direct | signal
+SIGNAL_DELIVERY="${SIGNAL_DELIVERY:-reference}"  # reference | reuse
 REPS="${REPS:-3}"
 TASKS="${TASKS:-chordparser_roman_editor pymdown_extensions_fancylists planet_sync_clients stix_shifter_intezer_connector tox_pyproject_toml_loader}"
 
@@ -58,7 +60,12 @@ echo "batch log: $LOG" >&2
 for T in $TASKS; do
   for R in $(seq "$REPS"); do
     echo "===== $T $VARIANT rep${R} =====" | tee -a "$LOG"
+    DELIVERY_ARGS=(--signal-delivery-mode reference)
+    if [[ "$VARIANT" == "signal" ]]; then
+      DELIVERY_ARGS=(--signal-delivery-mode "$SIGNAL_DELIVERY")
+    fi
     "$RUNNER_PY" -m demo.downstream.run_once --task-id "$T" --variant "$VARIANT" \
+      "${DELIVERY_ARGS[@]}" \
       2>&1 | tee -a "$LOG" || echo "[$T $VARIANT rep${R}] exit=$?" | tee -a "$LOG"
   done
 done

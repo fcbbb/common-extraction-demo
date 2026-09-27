@@ -64,6 +64,10 @@ def main() -> None:
         help="Attempts for Signal context generation when distillation fails validation",
     )
     parser.add_argument(
+        "--signal-delivery-mode", choices=("reference", "reuse"), default="reference",
+        help="reference provides read-only guidance; reuse qualifies and installs common modules",
+    )
+    parser.add_argument(
         "--agent-command",
         default="mini -t {task_prompt} -y --exit-immediately -o {trajectory_file}",
         help="External agent command; supports task/workspace/result/trajectory placeholders",
@@ -75,6 +79,8 @@ def main() -> None:
              "scoring; tasks without a reference file fall back to collected counts",
     )
     args = parser.parse_args()
+    if args.variant == "direct" and args.signal_delivery_mode != "reference":
+        parser.error("--signal-delivery-mode reuse requires --variant signal")
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     cache_root = ROOT / ".cache"
     workspace_root_was_default = args.workspace_root is None
@@ -180,6 +186,7 @@ def main() -> None:
         artifact_root=args.artifact_root,
         signal_context_dir=signal_context,
         signal_context_generation_wall_time_sec=signal_context_generation_wall_time_sec,
+        signal_delivery_mode=args.signal_delivery_mode,
         manifest=args.manifest,
         timeout_sec=args.timeout_sec,
         references_root=args.references,

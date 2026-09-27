@@ -11,6 +11,7 @@
 #
 # 可调环境变量:
 #   VARIANT  变体列表(默认 signal)
+#   SIGNAL_DELIVERY  signal 交付方式:reference(默认) 或 reuse(验收后安装共性模块)
 #   REPS     每任务重复数(默认 1)
 #   BATCH    结果隔离根后缀(默认 postfix → .cache/downstream-runs-postfix)
 #   TASKS    任务列表(默认下方 10 个 SWE-rebench 筛查任务;legacy 任务用 TASKS 覆盖)
@@ -35,6 +36,7 @@ PROJECT_DIR="${PROJECT_DIR:-${SLURM_SUBMIT_DIR:-$(pwd)}}"
 cd "$PROJECT_DIR"
 
 VARIANTS="${VARIANT:-signal}"
+SIGNAL_DELIVERY="${SIGNAL_DELIVERY:-reference}"
 REPS="${REPS:-1}"
 BATCH="${BATCH:-postfix}"
 RUNS_ROOT="$PROJECT_DIR/.cache/downstream-runs-$BATCH"
@@ -67,7 +69,7 @@ GIT_REV="$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || echo unkn
 GIT_DIRTY="$(git -C "$PROJECT_DIR" status --porcelain 2>/dev/null | wc -l || echo '?')"
 echo "git: $GIT_REV, dirty files: $GIT_DIRTY" | tee -a "$LOG"
 echo "runs root: $RUNS_ROOT" | tee -a "$LOG"
-echo "variants: $VARIANTS  reps: $REPS  tasks: $(echo $TASKS | wc -w)" | tee -a "$LOG"
+echo "variants: $VARIANTS  signal_delivery: $SIGNAL_DELIVERY  reps: $REPS  tasks: $(echo $TASKS | wc -w)" | tee -a "$LOG"
 
 run_id() {
   "$RUNNER_PY" -c "from datetime import datetime; print(datetime.now().strftime('%Y%m%d-%H%M%S-%f'))"
@@ -78,9 +80,14 @@ for V in $VARIANTS; do
     for R in $(seq "$REPS"); do
       RESULT_DIR="$RUNS_ROOT/$T/$V/$(run_id)"
       echo "===== $T $V rep${R} -> $RESULT_DIR =====" | tee -a "$LOG"
+      DELIVERY_ARGS=(--signal-delivery-mode reference)
+      if [[ "$V" == "signal" ]]; then
+        DELIVERY_ARGS=(--signal-delivery-mode "$SIGNAL_DELIVERY")
+      fi
       "$RUNNER_PY" -m demo.downstream.run_once \
         --task-id "$T" --variant "$V" \
         --result-dir "$RESULT_DIR" \
+        "${DELIVERY_ARGS[@]}" \
         2>&1 | tee -a "$LOG" || echo "[$T $V rep${R}] exit=$?" | tee -a "$LOG"
     done
   done
