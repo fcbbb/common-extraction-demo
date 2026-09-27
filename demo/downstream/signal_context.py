@@ -12,10 +12,13 @@ pipeline's member-rewrite equivalence procedure.
 from __future__ import annotations
 
 import ast
+import builtins
 import copy
 import hashlib
 import re
 import subprocess
+import symtable
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +47,7 @@ CONTEXT_USER = PROMPT_DIR / "signal_context_common_user_template.txt"
 CONTEXT_GATE_SYSTEM = PROMPT_DIR / "signal_context_gate_system.txt"
 CONTEXT_GATE_USER = PROMPT_DIR / "signal_context_gate_user_template.txt"
 _UNSAFE_STEM_RE = re.compile(r"[^A-Za-z0-9_.-]")
+AGENT_CONTEXT_ROOT = ".downstream/signal-context"
 
 
 def _prompt_meta() -> dict[str, str]:
@@ -81,6 +85,26 @@ def _prompt_invalidation(
     return gate_changed, gate_changed or common_changed
 
 
+def _semantic_dataset_key(
+    task_id: str,
+    repository: str,
+    source_commit: str,
+    file_entries: list[dict[str, Any]],
+    source_by_id: dict[str, str],
+) -> str:
+    """Namespace semantic-signal cache entries by the exact historical input."""
+    source_fingerprints = [
+        (entry["rel_path"], hashlib.sha256(source_by_id[entry["file_id"]].encode("utf-8")).hexdigest())
+        for entry in file_entries
+    ]
+    identity = "\0".join((repository, source_commit, *(
+        f"{path}\0{digest}" for path, digest in source_fingerprints
+    )))
+    task_stem = _safe_stem(task_id, 0, set())
+    fingerprint = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+    return f"downstream_{task_stem}_{fingerprint}"
+
+
 def _safe_stem(raw: str, index: int, used: set[str]) -> str:
     """Filesystem-safe, collision-free id for an LLM-supplied subcluster id."""
     stem = _UNSAFE_STEM_RE.sub("_", str(raw)).strip("._") or f"sub_{index}"
@@ -96,9 +120,11 @@ def _skill_markdown(patterns: list[dict[str, Any]]) -> str:
     lines = [
         "# Implementation guidance from comparable services",
         "",
-        "Guidance distilled by Signal from similar existing implementations in",
-        "this repository. Treat it as background reading: confirm APIs against",
-        "this repository's own code before relying on it.",
+        "Reusable components distilled from shared patterns in historical code",
+        "in this repository. Compare each pattern with the current task and",
+        "repository. Use it only where it fits; do not force unrelated code",
+        "into the pattern.",
+        "All paths below are relative to the repository root.",
         "",
         "## Patterns",
         "",
@@ -107,9 +133,9 @@ def _skill_markdown(patterns: list[dict[str, Any]]) -> str:
         lines.extend([
             f"### `{item['subcluster_id']}`",
             f"- Members: {', '.join(item['member_paths'])}",
-            f"- Guidance: `{item['guidance_path']}`",
-            f"- Common component: `{item['common_path']}`",
-            f"- Source evidence: `{item['snippets_path']}`",
+            f"- Guidance: `{AGENT_CONTEXT_ROOT}/{item['guidance_path']}`",
+            f"- Common component: `{AGENT_CONTEXT_ROOT}/{item['common_path']}`",
+            f"- Source evidence: `{AGENT_CONTEXT_ROOT}/{item['snippets_path']}`",
             "",
         ])
     return "\n".join(lines) + "\n"
@@ -239,6 +265,61 @@ def _member_evidence(source: str) -> tuple[set[str], set[str]]:
     return modules, identifiers
 
 
+def _stdlib_module_roots() -> frozenset[str]:
+    """Top-level standard-library module names, for the grounding exemption."""
+    names = getattr(sys, "stdlib_module_names", None)
+    if names is not None:
+        return frozenset(names)
+    # Python < 3.10: the vocabulary a distilled abstraction plausibly needs.
+    return frozenset({
+        "abc", "collections", "dataclasses", "enum", "functools", "itertools",
+        "math", "operator", "os", "re", "sys", "time", "types", "typing",
+        "warnings",
+    })
+
+
+_STDLIB_MODULE_ROOTS = _stdlib_module_roots()
+
+
+def _is_stdlib_module(module: str) -> bool:
+    """Standard-library imports are language vocabulary, not repository claims.
+
+    A distilled abstraction legitimately needs ``abc``/``typing`` even when
+    no member source imports them, so grounding must not treat those imports
+    as hallucinations; only modules that assert repository or third-party
+    knowledge have to be evidenced by the members.
+    """
+    return module.split(".")[0] in _STDLIB_MODULE_ROOTS
+
+
+def _undefined_names(source: str, grounded_names: set[str]) -> list[str]:
+    """Find unresolved global references in a distilled component.
+
+    ``compile`` checks syntax but does not resolve names. Use Python's symbol
+    table so local variables, parameters, nested scopes, and closures follow
+    the compiler's own scope rules. Names found in member sources remain
+    valid: a consumer can adapt an established repository symbol.
+    """
+    scopes = symtable.symtable(source, "common.py", "exec")
+    module_names = {
+        symbol.get_name()
+        for symbol in scopes.get_symbols()
+        if symbol.is_assigned() or symbol.is_imported() or symbol.is_namespace()
+    }
+    known_names = module_names | grounded_names | set(vars(builtins))
+    referenced_globals: set[str] = set()
+
+    def collect(scope: symtable.SymbolTable) -> None:
+        for symbol in scope.get_symbols():
+            if symbol.is_global() and symbol.is_referenced():
+                referenced_globals.add(symbol.get_name())
+        for child in scope.get_children():
+            collect(child)
+
+    collect(scopes)
+    return sorted(referenced_globals - known_names)
+
+
 def _validate_common_reference(
     common_payload: dict[str, Any],
     subcluster: dict[str, Any],
@@ -251,11 +332,13 @@ def _validate_common_reference(
     mode that would actually mislead the downstream agent is hallucinated
     APIs, and the member-rewrite equivalence procedure of the Signal
     pipeline does not catch that (py_compile resolves no names).  Instead:
-    every module common.py imports must be imported by a member source, and
-    every name it imports from a module must appear in the member sources;
-    a common.py that defines no top-level API is a failed distillation.
-    Whether the pattern ultimately helps the agent is measured by the
-    downstream A/B run, not here.
+    every module common.py imports must be imported by a member source --
+    standard-library modules exempted, because expressing a shared pattern
+    as an abstraction legitimately needs abc/typing vocabulary the members
+    never import -- and every name it imports from a non-stdlib module must
+    appear in the member sources; a common.py that defines no top-level API
+    is a failed distillation.  Whether the pattern ultimately helps the
+    agent is measured by the downstream A/B run, not here.
     """
     content = common_payload["library"]["content"]
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -288,6 +371,7 @@ def _validate_common_reference(
 
     imported_modules: list[str] = []
     imported_names: list[str] = []
+    stdlib_imported_names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             imported_modules.extend(alias.name for alias in node.names)
@@ -296,15 +380,30 @@ def _validate_common_reference(
                 continue
             if node.module and node.level == 0:
                 imported_modules.append(node.module)
+                if _is_stdlib_module(node.module):
+                    stdlib_imported_names.update(alias.name for alias in node.names)
             imported_names.extend(alias.name for alias in node.names)
-    invented_modules = sorted(set(imported_modules) - member_modules)
-    invented_names = sorted(set(imported_names) - member_identifiers)
-    if invented_modules or invented_names:
-        detail = ", ".join(invented_modules + invented_names)
+    invented_modules = sorted(
+        module for module in set(imported_modules) - member_modules
+        if not _is_stdlib_module(module)
+    )
+    invented_import_names = sorted(
+        set(imported_names) - member_identifiers - stdlib_imported_names
+    )
+    undefined_names = _undefined_names(content, member_identifiers)
+    if invented_modules or invented_import_names or undefined_names:
+        details = []
+        if invented_modules:
+            details.append("modules not present in member sources: " + ", ".join(invented_modules))
+        if invented_import_names:
+            details.append("imported names not present in member sources: " + ", ".join(invented_import_names))
+        if undefined_names:
+            details.append("undefined names: " + ", ".join(undefined_names))
         return {"subcluster_id": subcluster["cluster_id"], "status": "ungrounded",
-                "reason": f"imports not present in member sources: {detail}",
+                "reason": "; ".join(details),
                 "compile": compile_info, "defined_names": defined,
-                "invented_imports": invented_modules + invented_names}
+                "invented_imports": invented_modules + invented_import_names,
+                "undefined_names": undefined_names}
     return {"subcluster_id": subcluster["cluster_id"], "status": "ok",
             "compile": compile_info, "defined_names": defined}
 
@@ -377,6 +476,13 @@ def materialize_signal_context(
     if len(file_entries) < 2:
         raise ValueError(f"Signal context requires at least two C0 source files for {task_id}")
 
+    semantic_dataset_key = _semantic_dataset_key(
+        task_id,
+        task["repository"]["slug"],
+        c0,
+        file_entries,
+        source_by_id,
+    )
     cluster = {
         "cluster_id": "0",
         "name": f"downstream_{task_id}_c0_history",
@@ -432,6 +538,7 @@ def materialize_signal_context(
         resume=True,
         gate_cfg=gate_cfg,
         rerun_gate=rerun_gate,
+        semantic_dataset_key=semantic_dataset_key,
     )
     # Record the meta only after the gate output exists, so a crash during
     # the gate keeps the old meta and the gate reruns on the next attempt.
@@ -520,6 +627,7 @@ def materialize_signal_context(
         "source_commit": c0,
         "future_commit": future_end,
         "source_paths": [item["rel_path"] for item in file_entries],
+        "semantic_dataset_key": semantic_dataset_key,
         "patterns": patterns,
         "dropped": dropped,
         "signal_status": signal_status,

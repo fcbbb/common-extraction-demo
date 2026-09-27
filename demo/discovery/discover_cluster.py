@@ -98,6 +98,7 @@ def discover_cluster(
     resume: bool,
     gate_cfg: dict[str, Any],
     rerun_gate: bool = False,
+    semantic_dataset_key: str | None = None,
 ) -> dict[str, Any]:
     from . import gate  # noqa: PLC0415 - optional import keeps CLI importable pre-gate
 
@@ -105,15 +106,29 @@ def discover_cluster(
     out_dir = results_dir / "signal" / cluster_id
     file_ids = [f["file_id"] for f in cluster["files"]]
     sources = _cluster_sources(dataset_dir, cluster)
-    if resume and (load_json_if_exists(out_dir / "discovery_candidates.json") is not None):
-        candidates_doc = load_json_if_exists(out_dir / "discovery_candidates.json")
+    semantic_key = semantic_dataset_key or dataset_dir.name
+    cached_candidates = load_json_if_exists(out_dir / "discovery_candidates.json")
+    candidates_cache_valid = (
+        isinstance(cached_candidates, dict)
+        and cached_candidates.get("semantic_dataset_key") == semantic_key
+    )
+    if resume and candidates_cache_valid:
+        candidates_doc = cached_candidates
         print(f"signal cluster {cluster_id}: resume hit, reusing discovery_candidates.json", file=sys.stderr, flush=True)
     else:
         log_status(f"signal cluster {cluster_id}: discovery signals start ({len(file_ids)} files)")
-        evidences, audit = run_discovery(sources, cluster_id, dataset_dir.name, skip_semantic, embedding_model, force_semantic)
+        evidences, audit = run_discovery(
+            sources,
+            cluster_id,
+            semantic_key,
+            skip_semantic,
+            embedding_model,
+            force_semantic,
+        )
         fused = fusion.fuse_units(evidences, cfg=cfg)
         candidates_doc = {
             "cluster_id": cluster_id,
+            "semantic_dataset_key": semantic_key,
             "n_files": len(file_ids),
             "n_candidates": len(fused["candidates"]),
             "candidates": fused["candidates"],
@@ -129,8 +144,9 @@ def discover_cluster(
             f"{candidates_doc['edges_kept']}/{candidates_doc['edges_total']} pair edges passed, "
             f"{candidates_doc['n_candidates']} candidates"
         )
-    if resume and not rerun_gate and load_json_if_exists(out_dir / "discovery.json") is not None:
-        final_doc = load_json_if_exists(out_dir / "discovery.json")
+    cached_discovery = load_json_if_exists(out_dir / "discovery.json")
+    if resume and candidates_cache_valid and not rerun_gate and cached_discovery is not None:
+        final_doc = cached_discovery
         print(f"signal cluster {cluster_id}: resume hit, reusing discovery.json", file=sys.stderr, flush=True)
     else:
         log_status(

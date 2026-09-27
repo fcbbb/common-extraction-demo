@@ -50,8 +50,8 @@ def _embed(sources: list[dict[str, str]], model_name: str) -> tuple[Any, list[An
             )
             return model, embs
         except Exception as exc:  # noqa: BLE001
-            if device == "cuda" and "out of memory" in str(exc).lower():
-                print(f"[semantic] CUDA OOM, falling back to CPU ({exc})", flush=True)
+            if device == "cuda":
+                print(f"[semantic] CUDA failed, falling back to CPU ({exc})", flush=True)
                 import gc  # noqa: PLC0415
 
                 try:
@@ -59,7 +59,10 @@ def _embed(sources: list[dict[str, str]], model_name: str) -> tuple[Any, list[An
                 except NameError:
                     pass
                 gc.collect()
-                torch.cuda.empty_cache()
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:  # noqa: BLE001 - CUDA may be unusable after a device error
+                    pass
                 continue
             raise
     raise RuntimeError("no usable device")  # pragma: no cover

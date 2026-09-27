@@ -28,6 +28,8 @@ from typing import Any, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MANIFEST = ROOT / "demo" / "downstream" / "tasks.json"
+# Frozen per-task test-ID sets (gate-A state) for fixed-denominator scoring.
+DEFAULT_REFERENCES = ROOT / "demo" / "datasets" / "swe_rebench_screen" / "references"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 MISSING_MODULE_RE = re.compile(
     r"(?:ModuleNotFoundError|ImportError): No module named ['\"]([^'\"]+)['\"]"
@@ -210,7 +212,7 @@ def _verify_history(repo: Path, c0: str, future_end: str) -> None:
 
 
 def prepare(*, task_id: str, variant: str, repo_cache: Path, workspace_root: Path,
-            manifest: Path = DEFAULT_MANIFEST) -> Path:
+            manifest: Path = DEFAULT_MANIFEST, run_id: str | None = None) -> Path:
     if variant not in {"direct", "signal"}:
         raise ValueError(f"unsupported variant: {variant}")
     task = load_task(task_id, manifest)
@@ -220,7 +222,10 @@ def prepare(*, task_id: str, variant: str, repo_cache: Path, workspace_root: Pat
     # Export only C0 into a fresh repository. A regular Git worktree would
     # retain the cache repository's refs and objects, making future commits
     # discoverable by the Agent.
-    worktree = (workspace_root / task_id / variant / "source").resolve()
+    workspace_path = workspace_root / task_id / variant
+    if run_id is not None:
+        workspace_path /= run_id
+    worktree = (workspace_path / "source").resolve()
     if worktree.exists():
         raise FileExistsError(f"refusing to overwrite snapshot: {worktree}")
     worktree.parent.mkdir(parents=True, exist_ok=True)
@@ -248,7 +253,7 @@ def prepare(*, task_id: str, variant: str, repo_cache: Path, workspace_root: Pat
             "commit", "--no-gpg-sign", "-m", "C0 snapshot",
         ],
     ):
-        result = run_command(command, worktree, 120)
+        result = run_command(command, worktree, 240)
         if result.returncode != 0:
             raise RuntimeError(f"snapshot command failed: {result.stderr[-2000:]}")
     return worktree.resolve()
@@ -338,13 +343,103 @@ def _junit(path: Path) -> dict[str, Any]:
             "failed": failed, "errors": errors, "skipped": skipped, "cases": cases}
 
 
+def strip_classname(classname: str, repo_prefix: str = "") -> str:
+    """Normalize a junit classname to the repo-relative dotted path.
+
+    Run junits embed the per-run workspace path (``...source.<relpath>``);
+    reference junits embed the history-cache checkout path instead
+    (``.cache.history.<slug>.<relpath>``).
+    """
+    if ".source." in classname:
+        return classname.split(".source.", 1)[1]
+    if repo_prefix and classname.startswith(repo_prefix + "."):
+        return classname[len(repo_prefix) + 1:]
+    return classname
+
+
+def junit_keys(path: Path, repo_prefix: str = "") -> dict[str, str]:
+    """Map normalized test key -> outcome ('pass' | 'fail' | 'error' | 'skip')."""
+    outcomes: dict[str, str] = {}
+    for testcase in ET.parse(path).getroot().iter("testcase"):
+        key = f"{strip_classname(testcase.get('classname', ''), repo_prefix)}::{testcase.get('name', '')}"
+        status = "pass"
+        for tag, value in (("failure", "fail"), ("error", "error"), ("skipped", "skip")):
+            if testcase.find(tag) is not None:
+                status = value
+                break
+        outcomes[key] = status
+    return outcomes
+
+
+def _reference_repo_prefix(task: Mapping[str, Any]) -> str:
+    return ".cache.history." + task["repository"]["slug"].replace("/", ".")
+
+
+def load_reference(task_id: str, references_root: Path, repo_prefix: str) -> set[str]:
+    """The frozen set of test IDs the upstream future tests define.
+
+    Reference junits are generated once at the gate-A future state and frozen
+    per task under ``<references_root>/<task_id>.xml``; every testcase in the
+    file counts, regardless of the outcome recorded in it.
+    """
+    ref = Path(references_root) / f"{task_id}.xml"
+    return set(junit_keys(ref, repo_prefix))
+
+
+def _load_future_reference(task: Mapping[str, Any],
+                           references_root: Path | None) -> set[str] | None:
+    """Load the task's frozen reference set; None means score by collection.
+
+    Tasks without a reference file (the hand-built adapter tasks) and unreadable
+    reference files both degrade to the legacy collected-counts scoring.
+    """
+    if references_root is None:
+        return None
+    ref = Path(references_root) / f"{task['task_id']}.xml"
+    if not ref.is_file():
+        return None
+    try:
+        return load_reference(task["task_id"], Path(references_root),
+                              _reference_repo_prefix(task))
+    except (ET.ParseError, OSError) as exc:
+        print(f"warning: unreadable reference {ref} ({exc}); "
+              "scoring by collected counts", file=sys.stderr, flush=True)
+        return None
+
+
+def _apply_reference_scores(result: dict[str, Any], reference: set[str],
+                            junit: Path) -> bool:
+    """Score the future suite against the frozen reference set (fixed denominator).
+
+    A reference test passes iff its ID appears as a passed testcase in the run's
+    junit; missing, errored, failed, and skipped tests all count as not passed.
+    Agent-added tests outside the reference set are counted but never scored.
+    Returns whether the suite is green under the reference denominator.
+    """
+    outcomes = junit_keys(junit, "")
+    passed = {key for key, status in outcomes.items() if status == "pass"}
+    ref_total = len(reference)
+    ref_passed = len(reference & passed)
+    result["tests"]["future_passed"] = ref_passed
+    result["tests"]["future_total"] = ref_total
+    result["tests"]["future_reference_total"] = ref_total
+    result["tests"]["non_reference_tests_collected"] = sum(
+        1 for key in outcomes if key not in reference)
+    return ref_passed == ref_total
+
+
 def _empty_result(task_id: str, variant: str, model: str) -> dict[str, Any]:
     return {"task_id": task_id, "variant": variant, "model": model,
             "workspace_kind": "c0_original", "status": "not_started",
-            "tests": {"future_passed": 0, "future_total": 0, "regression_passed": 0, "regression_total": 0},
+            "tests": {"future_passed": 0, "future_total": 0,
+                      "future_collected_passed": 0, "future_collected_total": 0,
+                      "future_reference_total": None,
+                      "non_reference_tests_collected": 0,
+                      "regression_passed": 0, "regression_total": 0},
             "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
                       "api_calls": 0, "agent_turns": 0, "tool_calls": 0,
                       "cost_usd": 0.0, "agent_wall_time_sec": 0.0,
+                      "signal_context_generation_wall_time_sec": 0.0,
                       "evaluation_wall_time_sec": 0.0, "wall_time_sec": 0.0},
             "code": {"changed_files": 0, "patch_lines": 0}, "artifacts": {}, "error": None}
 
@@ -574,20 +669,51 @@ def _ensure_test_dependencies(
     return records, None
 
 
+def _task_env(venv_dir: Path, base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Build a child-process env whose PATH resolves to the per-run task venv.
+
+    Only ``PATH`` is prepended: the bare ``python3``/``pip``/``pytest``
+    commands in ``tasks.json`` resolve their interpreter through PATH, while
+    the runner and the agent framework keep resolving from the launching
+    environment (the venv does not shadow their binaries).
+    """
+    env = dict(base or {})
+    path = env.get("PATH") or os.environ.get("PATH", "")
+    env["PATH"] = f"{venv_dir / 'bin'}{os.pathsep}{path}"
+    return env
+
+
+def _task_venv_dir(workspace: Path) -> Path:
+    """Per-run venv location: a sibling of the C0 ``source`` checkout.
+
+    Living outside ``source`` keeps the git snapshot, patch statistics, and
+    untracked-file accounting free of venv contents.
+    """
+    return workspace.parent / ".venv"
+
+
 def _run_task_setup(task: dict[str, Any], workspace: Path, result_dir: Path,
-                    timeout_sec: float) -> tuple[dict[str, Any], str | None]:
+                    timeout_sec: float, *, venv_dir: Path,
+                    env: Mapping[str, str] | None = None
+                    ) -> tuple[dict[str, Any], str | None]:
     """Run task-declared environment setup before starting the agent.
 
     ``install_command`` and ``test_setup`` are part of the task contract. They
     must run in the isolated C0 checkout, otherwise a correct implementation
     can fail because test-only support files or optional dependencies are
     missing. Commands are argv-parsed by ``run_command``; no shell is used.
+
+    The per-run venv at ``venv_dir`` is created first; setup commands run
+    with ``env`` (the venv's ``bin`` prepended to PATH) so dependencies land
+    in the venv instead of the launching environment.
     """
     setup_dir = result_dir / "setup"
     setup_dir.mkdir(parents=True, exist_ok=True)
     records: dict[str, Any] = {"commands": []}
 
-    commands: list[tuple[str, str]] = []
+    commands: list[tuple[str, str | Sequence[str]]] = [
+        ("venv", [sys.executable, "-m", "venv", str(venv_dir)])
+    ]
     install_command = task.get("install_command")
     if install_command:
         commands.append(("install", install_command))
@@ -600,6 +726,7 @@ def _run_task_setup(task: dict[str, Any], workspace: Path, result_dir: Path,
                 command,
                 workspace,
                 timeout_sec,
+                env=env,
                 artifact_dir=setup_dir / name,
                 stream=True,
             )
@@ -664,7 +791,9 @@ def run_agent_command(*, task_id: str, variant: str, workspace: Path,
                       agent_command: str | Sequence[str], result_dir: Path,
                       artifact_root: Path | None = None,
                       signal_context_dir: Path | None = None,
+                      signal_context_generation_wall_time_sec: float = 0.0,
                       manifest: Path = DEFAULT_MANIFEST, timeout_sec: float = 1800,
+                      references_root: Path | None = DEFAULT_REFERENCES,
                       model: str = "external-agent") -> dict[str, Any]:
     workspace = workspace.resolve()
     result_dir = result_dir.resolve()
@@ -684,9 +813,14 @@ def run_agent_command(*, task_id: str, variant: str, workspace: Path,
     task_prompt = task["agent_task"].strip()
     if signal_context_file is not None:
         task_prompt += (
-            "\n\nImplementation guidance distilled from comparable services in this "
-            f"repository is available at {signal_context_file.relative_to(workspace)}. "
-            "Consult it while implementing."
+            "\n\nA reusable common component distilled from historical code in this "
+            f"repository is indexed at {signal_context_file.relative_to(workspace)}. "
+            "Read the index and decide whether its common components apply to this "
+            "task. Use the repository-root paths in the index to inspect relevant "
+            "components and source evidence, and reuse the parts that fit. Any "
+            "interface mismatch will be caught by the tests that run after you "
+            "finish, so there is no need to cross-check the components against "
+            "the repository yourself."
         )
     task_file = result_dir / "TASK.md"
     task_file.write_text(task_prompt + "\n", encoding="utf-8")
@@ -701,9 +835,17 @@ def run_agent_command(*, task_id: str, variant: str, workspace: Path,
         signal_context_file=str(signal_context_file) if signal_context_file else "",
     ) for item in raw]
     result = _empty_result(task_id, variant, model)
+    result["usage"]["signal_context_generation_wall_time_sec"] = max(
+        0.0, float(signal_context_generation_wall_time_sec)
+    )
     started = time.monotonic()
-    setup, setup_error = _run_task_setup(task, workspace, result_dir, timeout_sec)
+    venv_dir = _task_venv_dir(workspace)
+    setup, setup_error = _run_task_setup(
+        task, workspace, result_dir, timeout_sec,
+        venv_dir=venv_dir, env=_task_env(venv_dir),
+    )
     result["artifacts"]["setup"] = setup
+    result["artifacts"]["venv"] = str(venv_dir)
     if setup_error is not None:
         result["status"] = "timeout" if setup_error.endswith("_failed") and any(
             item.get("timed_out") for item in setup.get("commands", [])
@@ -719,8 +861,11 @@ def run_agent_command(*, task_id: str, variant: str, workspace: Path,
     base_commit = base_result.stdout.strip() if base_result.returncode == 0 else None
     baseline_untracked = _untracked_files(workspace)
     # Only the task file is exposed to the agent process; task/variant
-    # identifiers would tell it which arm of the experiment it is in.
-    env = {"DOWNSTREAM_TASK_FILE": str(task_file)}
+    # identifiers would tell it which arm of the experiment it is in. The
+    # venv's bin leads PATH so the agent's own shell commands resolve
+    # python3/pip to the per-run venv, while the agent binary itself (and
+    # its model client) keep coming from the launching environment.
+    env = _task_env(venv_dir, {"DOWNSTREAM_TASK_FILE": str(task_file)})
     if signal_context_file is not None:
         env["DOWNSTREAM_SIGNAL_CONTEXT_DIR"] = str(signal_context_file.parent)
         env["DOWNSTREAM_SIGNAL_CONTEXT_FILE"] = str(signal_context_file)
@@ -753,8 +898,11 @@ def run_agent_command(*, task_id: str, variant: str, workspace: Path,
     if artifact_root is not None:
         result["artifacts"]["injected_tests"] = inject_tests(artifact_root, workspace)
     evaluation_started = time.monotonic()
-    test_env = {key: str(value) for key, value in task.get("test_env", {}).items()}
+    test_env = _task_env(
+        venv_dir, {key: str(value) for key, value in task.get("test_env", {}).items()}
+    )
     test_env.setdefault("DOWNSTREAM_WORKSPACE", str(workspace))
+    future_reference = _load_future_reference(task, references_root)
     all_green = True
     suite_timed_out = False
     for suite in ("future", "regression"):
@@ -764,15 +912,36 @@ def run_agent_command(*, task_id: str, variant: str, workspace: Path,
             test_argv.append(f"--junitxml={junit}")
         print(f"\n[{suite}] {' '.join(test_argv)}", flush=True)
         test = run_command(
-            test_argv, workspace, timeout_sec, env=test_env or None,
+            test_argv, workspace, timeout_sec, env=test_env,
             artifact_dir=result_dir / suite, stream=True,
         )
         result["artifacts"][suite] = asdict(test)
         suite_green = not _command_failed(test)
-        if junit.exists():
+        if suite == "future":
+            report = _junit(junit) if junit.exists() else None
+            if report is not None:
+                result["tests"]["future_collected_passed"] = report["passed"]
+                result["tests"]["future_collected_total"] = report["total"]
+            if future_reference is not None:
+                # Fixed reference denominator: the agent can add test files to
+                # the suite directory (inflating collected counts) or break
+                # imports so reference tests never collect, so greenness
+                # follows the frozen reference set, not what pytest happened
+                # to collect.  A missing junit means the tests never ran: 0 of
+                # the reference set.
+                if junit.exists():
+                    suite_green = _apply_reference_scores(result, future_reference, junit)
+                else:
+                    result["tests"]["future_total"] = len(future_reference)
+                    result["tests"]["future_reference_total"] = len(future_reference)
+            elif report is not None:
+                result["tests"]["future_passed"] = report["passed"]
+                result["tests"]["future_total"] = report["total"]
+                suite_green = suite_green and report["passed"] == report["total"]
+        elif junit.exists():
             report = _junit(junit)
-            result["tests"][f"{suite}_passed"] = report["passed"]
-            result["tests"][f"{suite}_total"] = report["total"]
+            result["tests"]["regression_passed"] = report["passed"]
+            result["tests"]["regression_total"] = report["total"]
             suite_green = suite_green and report["passed"] == report["total"]
         if not suite_green:
             all_green = False

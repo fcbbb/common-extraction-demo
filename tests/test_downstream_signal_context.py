@@ -4,11 +4,14 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from demo.downstream.core import _copy_signal_context
+from demo.discovery.discover_cluster import discover_cluster
 from demo.downstream.signal_context import (
     _prompt_invalidation,
     _safe_stem,
+    _semantic_dataset_key,
     _skill_markdown,
     _validate_common_reference,
     _validate_context_common,
@@ -50,12 +53,27 @@ class DownstreamSignalContextTests(unittest.TestCase):
         }])
         self.assertIn("# Implementation guidance from comparable services", markdown)
         self.assertIn("moto/budgets/models.py", markdown)
+        self.assertIn("All paths below are relative to the repository root.", markdown)
+        self.assertIn(".downstream/signal-context/patterns/0_0_common.py", markdown)
+        self.assertIn(".downstream/signal-context/snippets/0_0.md", markdown)
+        self.assertIn("Compare each pattern with the current task", markdown)
+        self.assertIn("do not force unrelated code", markdown)
         # No experiment structure or commit identifiers may leak to the agent.
         self.assertNotIn("future", markdown.lower())
         self.assertNotIn("C0", markdown)
         self.assertNotIn("patch", markdown.lower())
         for forbidden in ("0bcc551e", "20afea38", "0123456789abcdef0123456789abcdef01234567"):
             self.assertNotIn(forbidden, markdown)
+
+    def test_semantic_cache_key_tracks_repository_and_source_content(self) -> None:
+        entries = [{"file_id": "file_000.py", "rel_path": "pkg/backend.py"}]
+        sources = {"file_000.py": "class Backend: pass\n"}
+        key = _semantic_dataset_key("task", "org/repo", "abc123", entries, sources)
+
+        self.assertEqual(key, _semantic_dataset_key("task", "org/repo", "abc123", entries, sources))
+        self.assertNotEqual(key, _semantic_dataset_key("task", "other/repo", "abc123", entries, sources))
+        self.assertNotEqual(key, _semantic_dataset_key("task", "org/repo", "abc123", entries,
+                                                       {"file_000.py": "class Different: pass\n"}))
 
     def test_safe_stem_sanitizes_and_dedupes(self) -> None:
         used: set[str] = set()
@@ -98,12 +116,95 @@ class DownstreamSignalContextTests(unittest.TestCase):
             self.assertIn("orjson", result["invented_imports"])
             self.assertIn("MagicBackend", result["invented_imports"])
 
+            undefined = {
+                "library": {"path": "common.py",
+                            "content": "def f():\n    return NotFoundException('missing')\n"},
+            }
+            result = _validate_common_reference(undefined, subcluster, members, out_dir)
+            self.assertEqual(result["status"], "ungrounded")
+            self.assertIn("NotFoundException", result["undefined_names"])
+
             empty = {"library": {"path": "common.py", "content": "import json\n"}}
             self.assertEqual(_validate_common_reference(empty, subcluster, members, out_dir)["status"], "empty")
 
             broken = {"library": {"path": "common.py", "content": "def (:\n"}}
             self.assertEqual(_validate_common_reference(broken, subcluster, members, out_dir)["status"],
                              "compile_failed")
+
+    def test_reference_validation_allows_stdlib_abstraction(self) -> None:
+        # Expressing a shared pattern as an ABC needs abc/typing vocabulary the
+        # members never import; that is a generalization, not a hallucination.
+        members = {"file_000.py": "class Shape:\n    def area(self):\n        raise NotImplementedError\n"}
+        subcluster = {"cluster_id": "0_0", "members": ["file_000.py"]}
+        with TemporaryDirectory() as temp:
+            out_dir = Path(temp)
+
+            abstract = {
+                "library": {"path": "common.py", "content": (
+                    "from abc import ABC, abstractmethod\n"
+                    "from typing import Optional\n\n\n"
+                    "class ShapeBase(ABC):\n"
+                    "    def __init__(self, scale: Optional[float] = None):\n"
+                    "        self.scale = scale\n\n"
+                    "    @abstractmethod\n"
+                    "    def area(self):\n"
+                    "        ...\n"
+                )},
+            }
+            self.assertEqual(_validate_common_reference(abstract, subcluster, members, out_dir)["status"],
+                             "ok")
+
+            # Non-stdlib imports keep requiring member evidence, even when the
+            # member does import part of the same third-party package.
+            hallucinated = {
+                "library": {"path": "common.py", "content": (
+                    "from abc import ABC\n"
+                    "import orjson\n\n\n"
+                    "class ShapeBase(ABC):\n"
+                    "    def dumps(self):\n"
+                    "        return orjson.dumps(1)\n"
+                )},
+            }
+            result = _validate_common_reference(hallucinated, subcluster, members, out_dir)
+            self.assertEqual(result["status"], "ungrounded")
+            self.assertIn("orjson", result["invented_imports"])
+
+    def test_discovery_rebuilds_unfingerprinted_resume_cache(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            dataset = root / "dataset"
+            results = root / "results"
+            original = dataset / "clusters" / "0" / "original"
+            original.mkdir(parents=True)
+            (original / "file_000.py").write_text("class A: pass\n", encoding="utf-8")
+            (original / "file_001.py").write_text("class B: pass\n", encoding="utf-8")
+            out = results / "signal" / "0"
+            out.mkdir(parents=True)
+            (out / "discovery_candidates.json").write_text(json.dumps({
+                "cluster_id": "0", "n_files": 2, "n_candidates": 0,
+                "candidates": [], "noise": [], "edges_total": 0, "edges_kept": 0,
+                "config": {},
+            }), encoding="utf-8")
+            (out / "discovery.json").write_text(json.dumps({
+                "clusters": [{"cluster_id": "stale", "members": ["file_000.py"]}],
+                "noise": [],
+            }), encoding="utf-8")
+            cluster = {"cluster_id": "0", "files": [
+                {"file_id": "file_000.py"}, {"file_id": "file_001.py"},
+            ]}
+            fused = {"candidates": [], "noise": [], "edges_total": 0,
+                     "edges_kept": 0, "config": {}}
+            with patch("demo.discovery.discover_cluster.run_discovery", return_value=([], {})) as signals, \
+                 patch("demo.discovery.fusion.fuse_units", return_value=fused), \
+                 patch("demo.discovery.gate.run_gate", return_value={"clusters": [], "noise": []}) as gate:
+                discover_cluster(
+                    cluster, dataset, results, {}, True, False, "model", False, True, {},
+                    semantic_dataset_key="source-fingerprint",
+                )
+            signals.assert_called_once()
+            gate.assert_called_once()
+            cached = json.loads((out / "discovery_candidates.json").read_text(encoding="utf-8"))
+            self.assertEqual(cached["semantic_dataset_key"], "source-fingerprint")
 
     def test_context_common_requires_structured_guidance(self) -> None:
         payload = {
